@@ -69,23 +69,6 @@ td input:focus{background:#fff;border-color:var(--line)}
 <div id="modal" onclick="if(event.target===this)closeModal()"><div class="box" id="mbox"></div></div>
 
 <script>
-/* =====================================================================
-   [Firebase 설정 방법 — 5분이면 돼요]
-   1) https://console.firebase.google.com 접속 → "프로젝트 추가" (애널리틱스는 꺼도 됩니다)
-   2) 왼쪽 메뉴 "빌드 > Firestore Database" → "데이터베이스 만들기" → 위치는 asia-northeast3(서울) 추천
-   3) Firestore "규칙" 탭에 아래를 붙여넣고 "게시":
-        rules_version = '2';
-        service cloud.firestore {
-          match /databases/{database}/documents {
-            match /rooms/{room}/tx/{id} { allow read, write: if true; }
-          }
-        }
-      → 방 코드를 아는 사람만 해당 방의 내역을 읽고 쓸 수 있어요. 방 코드는 길고 추측하기 어렵게 정하세요.
-   4) 프로젝트 설정(톱니바퀴) > "내 앱" > 웹 앱(</>) 추가 → 나오는 firebaseConfig 값을 아래에 붙여넣기
-   5) 이 HTML 파일을 두 사람이 같은 곳에서 열어야 해요. 같은 URL로 쓰려면 Firebase Hosting, GitHub Pages,
-      Netlify Drop 등에 이 파일을 올리세요. (파일을 각자 따로 열어도 같은 firebaseConfig + 같은 방 코드면 동기화돼요.)
-   6) 상단 "방 코드" 버튼에서 두 사람이 같은 코드를 입력하면 연결 끝!
-   ===================================================================== */
 const firebaseConfig = {
   apiKey: "AIzaSyBLVF6X3h6P-FQ7994J1uOZdtX5u9hH7Mo",
   authDomain: "haesungsukyeong.firebaseapp.com",
@@ -116,16 +99,18 @@ let tx=JSON.parse(localStorage.getItem('ledger')||'[]');
 let apiKey=localStorage.getItem('gkey')||'';
 let sel=[], charts=[];
 const save=()=>localStorage.setItem('ledger',JSON.stringify(tx));
+
 /* ===== Firestore 동기화 ===== */
 let db=null,unsub=null,room='0314';
 const fbOn=()=>!!(firebaseConfig.apiKey&&firebaseConfig.projectId);
 const col=()=>db.collection('rooms').doc(room).collection('tx');
 const setSync=t=>{const e=document.getElementById('sync');if(e)e.textContent=t};
+const saveKey=k=>{apiKey=k;localStorage.setItem('gkey',k);if(db&&room)db.collection('rooms').doc(room).set({gkey:k},{merge:true})};
 function put(t){const i=tx.findIndex(x=>x.id===t.id);if(i<0)tx.push(t);else tx[i]=t;save();if(db&&room)col().doc(t.id).set(t).catch(e=>setSync('🔴 저장 실패: '+e.code))}
 function rmv(id){tx=tx.filter(x=>x.id!==id);save();if(db&&room)col().doc(id).delete().catch(e=>setSync('🔴 삭제 실패: '+e.code))}
 function roomBox(){
-  if(!fbOn())return alert('코드 맨 위 firebaseConfig에 Firebase 설정값을 먼저 붙여넣어 주세요. (설정 방법은 코드 상단 주석 참고)');
-  const r=prompt('부부가 함께 쓸 방 코드를 입력하세요.\n두 사람이 똑같이 입력해야 같은 가계부가 열려요.\n(길고 추측하기 어렵게: 예 sukyung-home-2026-x7k)',room);
+  if(!fbOn())return alert('firebaseConfig 설정값을 확인해 주세요.');
+  const r=prompt('부부가 함께 쓸 방 코드를 입력하세요.',room);
   if(r!==null){room=r.trim();localStorage.setItem('room',room);connect()}
 }
 function connect(){
@@ -135,6 +120,7 @@ function connect(){
   try{
     if(!db){firebase.initializeApp(firebaseConfig);db=firebase.firestore()}
     let first=true;setSync('연결 중…');
+    db.collection('rooms').doc(room).onSnapshot(d=>{if(d.exists&&d.data().gkey){apiKey=d.data().gkey;localStorage.setItem('gkey',apiKey)}});
     unsub=col().onSnapshot(s=>{
       if(first){first=false;
         if(s.empty&&tx.length&&confirm(`이 기기의 기존 내역 ${tx.length}건을 공유 가계부 "${room}"에 올릴까요?`)){tx.slice().forEach(put);setSync('🟢 실시간 동기화 중');return}}
@@ -163,12 +149,8 @@ function exportFile(type){const rows=cur().map(t=>({날짜:t.date,구분:G[grp(t
   const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(rows),month);XLSX.writeFile(wb,`가계부_${month}.${type}`,{bookType:type})}
 
 /* ===== Gemini OCR ===== */
-const ep=apiKey.startsWith('AQ.')
-      ?`https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent?key=${apiKey}`
-      :`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-    const r=await fetch(ep,
-      {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{parts}],generationConfig:{responseMimeType:'application/json'}})});
-function keyBox(){const k=prompt('Gemini API 키를 입력하세요 (이 브라우저에만 저장돼요)',apiKey);if(k!==null){apiKey=k.trim();localStorage.setItem('gkey',apiKey)}}
+const b64=f=>new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(',')[1]);r.onerror=rej;r.readAsDataURL(f)});
+function keyBox(){const k=prompt('Gemini API 키를 입력하세요 (공유 방에 자동 저장돼요)',apiKey);if(k!==null)saveKey(k.trim())}
 async function upload(inp,kind){
   const files=[...inp.files];inp.value='';if(!files.length)return;
   if(!apiKey){keyBox();if(!apiKey)return}
@@ -179,7 +161,10 @@ async function upload(inp,kind){
    :`통장 입금/자동이체 캡처다. 날짜(YYYY-MM-DD, 연도가 없으면 ${month.slice(0,4)}), 항목명, 금액(양의 정수)을 추출하고 cat을 다음 중 하나로 분류해: ${cats.join(', ')}. 급여 입금은 수입, 적금·청약은 저축, 그 외는 고정지출. JSON 배열만 출력: [{"date","name","amount","cat"}]`;
   try{
     const parts=[{text:prompt}];for(const f of files)parts.push({inline_data:{mime_type:f.type||'image/jpeg',data:await b64(f)}});
-    const r=await fetch(`https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`,
+    const ep=apiKey.startsWith('AQ.')
+      ?`https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent?key=${apiKey}`
+      :`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+    const r=await fetch(ep,
       {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{parts}],generationConfig:{responseMimeType:'application/json'}})});
     if(!r.ok)throw new Error('API 오류 '+r.status);
     const j=await r.json(),rows=JSON.parse(j.candidates[0].content.parts[0].text.replace(/```json|```/g,''));
