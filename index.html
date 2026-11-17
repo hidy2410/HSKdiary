@@ -105,7 +105,7 @@ let db=null,unsub=null,room=localStorage.getItem('room')||'0314';
 const fbOn=()=>!!(firebaseConfig.apiKey&&firebaseConfig.projectId);
 const col=()=>db.collection('rooms').doc(room).collection('tx');
 const setSync=t=>{const e=document.getElementById('sync');if(e)e.textContent=t};
-const saveKey=k=>{apiKey=k;localStorage.setItem('gkey',k);if(db&&room)db.collection('rooms').doc(room).set({gkey:k},{merge:true}).catch(()=>{})};
+const saveKey=k=>{apiKey=k;localStorage.setItem('gkey',k);if(db&&room)db.collection('rooms').doc(room).set({gkey:k},{merge:true}).catch(e=>alert('키를 공유 방에 저장하지 못했어요('+e.code+'). 이 기기에서는 사용 가능해요. Firestore 규칙을 확인해 주세요.'))};
 function put(t){const i=tx.findIndex(x=>x.id===t.id);if(i<0)tx.push(t);else tx[i]=t;save();if(db&&room)col().doc(t.id).set(t).catch(e=>setSync('🔴 저장 실패: '+e.code))}
 function rmv(id){tx=tx.filter(x=>x.id!==id);save();if(db&&room)col().doc(id).delete().catch(e=>setSync('🔴 삭제 실패: '+e.code))}
 function roomBox(){
@@ -115,4 +115,260 @@ function roomBox(){
 }
 function connect(){
   if(unsub){unsub();unsub=null}
-  if(!fbOn()){set
+  if(!fbOn()){setSync('💾 이 기기에만 저장 중');return}
+  if(!room){setSync('방 코드를 입력하면 공유돼요');return}
+  try{
+    if(!db){firebase.initializeApp(firebaseConfig);db=firebase.firestore()}
+    let first=true;setSync('연결 중…');
+    db.collection('rooms').doc(room).onSnapshot(d=>{if(d.exists&&d.data().gkey){apiKey=d.data().gkey;localStorage.setItem('gkey',apiKey)}},()=>{});
+    unsub=col().onSnapshot(s=>{
+      if(first){first=false;
+        if(s.empty&&tx.length&&confirm(`이 기기의 기존 내역 ${tx.length}건을 공유 가계부 "${room}"에 올릴까요?`)){tx.slice().forEach(put);setSync('🟢 실시간 동기화 중');return}}
+      tx=s.docs.map(d=>d.data());save();render();setSync('🟢 실시간 동기화 중');
+    },e=>setSync('🔴 연결 실패('+e.code+') — 규칙·설정값을 확인하세요'));
+  }catch(e){setSync('🔴 설정 오류: '+e.message)}
+}
+const cur=()=>tx.filter(t=>t.date.startsWith(month)).sort((a,b)=>a.date.localeCompare(b.date));
+const sum=a=>a.reduce((s,t)=>s+t.amount,0);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function setMonth(v){if(v){month=v;sel=[];render()}}
+function upd(id,k,v){const t=tx.find(x=>x.id===id);t[k]=k==='amount'?+v||0:k==='rec'?!!v:v;put(t);render()}
+function del(ids){ids.forEach(rmv);sel=[];render()}
+function add(){put({id:uid(),date:month+'-01',name:'새 항목',amount:0,cat:'기타',memo:'',rec:false});render()}
+function tog(id,on){sel=on?[...sel,id]:sel.filter(i=>i!==id)}
+function merge(){const r=cur().filter(t=>sel.includes(t.id));if(r.length<2)return alert('합칠 항목을 2개 이상 선택하세요.');
+  const [a,...rest]=r;a.name=`${a.name} 외 ${rest.length}건`;a.amount=sum(r);put(a);del(rest.map(x=>x.id))}
+function sample(){const m=month,P=(d,name,amount,cat,rec)=>({id:uid(),date:`${m}-${d}`,name,amount,cat,memo:'',rec});
+  [P('01','급여',3800000,'주수입',1),P('10','청약',200000,'청약',1),P('10','적금',500000,'적금',1),P('05','대출이자',650000,'대출이자',1),
+  P('07','통신비',89000,'통신비',1),P('25','관리비',180000,'관리비',1),P('03','쿠팡',182400,'식비'),P('08','이마트',214300,'식비'),P('12','다이소',38600,'생활용품'),
+  P('15','유니클로',429200,'꾸밈'),P('16','LF스퀘어',453908,'꾸밈'),P('18','모던하우스',87000,'꾸밈'),P('20','○○내과',32000,'건강'),P('22','CGV',28000,'문화생활')].forEach(put);render()}
+function loadFixed(){const [y,m]=month.split('-').map(Number),pm=`${m===1?y-1:y}-${String(m===1?12:m-1).padStart(2,'0')}`,last=new Date(y,m,0).getDate(),c=cur();
+  const add=tx.filter(t=>t.rec&&t.date.startsWith(pm)&&!c.some(x=>x.rec&&x.name===t.name&&x.cat===t.cat)).map(t=>({...t,id:uid(),date:`${month}-${String(Math.min(+t.date.slice(8),last)).padStart(2,'0')}`}));
+  if(!add.length)return alert('불러올 지난달 고정 내역이 없거나 이미 모두 반영되어 있어요.');add.forEach(put);render()}
+function exportFile(type){const rows=cur().map(t=>({날짜:t.date,구분:G[grp(t.cat)].l,항목:t.cat,내용:t.name,금액:t.amount,메모:t.memo}));
+  const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(rows),month);XLSX.writeFile(wb,`가계부_${month}.${type}`,{bookType:type})}
+
+/* ===== 업로드: 사진(Gemini) + 엑셀/CSV(직접 읽기) ===== */
+const b64=f=>new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(',')[1]);r.onerror=rej;r.readAsDataURL(f)});
+function keyBox(){const k=prompt('Gemini API 키를 입력하세요 (공유 방에 자동 저장돼요)',apiKey);if(k!==null)saveKey(k.trim())}
+const MODELS=['gemini-3.6-flash','gemini-3.5-flash','gemini-2.5-flash'];
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const T=t=>({type:t});
+const SCHEMA={type:'OBJECT',properties:{rows:{type:'ARRAY',items:{type:'OBJECT',properties:{date:T('STRING'),name:T('STRING'),amount:T('INTEGER'),cat:T('STRING')},required:['date','name','amount','cat']}},printed_total:{type:'INTEGER',nullable:true}},required:['rows']};
+const SCHEMA_CATS={type:'ARRAY',items:{type:'OBJECT',properties:{name:T('STRING'),cat:T('STRING')},required:['name','cat']}};
+let useSchema=true;
+async function gem(parts,schema){
+  let lastErr='';
+  for(const m of MODELS){
+    for(let a=0;a<3;a++){
+      const cfg={temperature:0,maxOutputTokens:16384,responseMimeType:'application/json'};
+      if(useSchema&&schema)cfg.responseSchema=schema;
+      const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`,
+        {method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':apiKey},body:JSON.stringify({contents:[{role:'user',parts}],generationConfig:cfg})});
+      if(r.ok){const j=await r.json();const c=j.candidates&&j.candidates[0];if(!c||!c.content)throw new Error('모델이 결과를 돌려주지 않았어요 (이미지가 차단되었을 수 있어요)');return c.content.parts.map(p=>p.text||'').join('').replace(/```json|```/g,'')}
+      const b=await r.json().catch(()=>({}));lastErr=`${r.status} ${(b.error&&b.error.message)||''}`;
+      if(r.status===400&&useSchema&&schema){useSchema=false;a--;continue}
+      if(r.status===404)break;
+      if(r.status===429||r.status>=500){await sleep(2500*(a+1));continue}
+      throw new Error(lastErr);
+    }
+  }
+  throw new Error(lastErr);
+}
+/* --- 분류 보조: 내가 고쳐둔 가맹점 분류를 기억해서 다음에도 적용 --- */
+const known=()=>{const m={};tx.forEach(t=>{if(t.cat!=='기타')m[t.name]=t.cat});return m};
+const BANK=[[/적금/,'적금'],[/청약/,'청약'],[/대출|이자/,'대출이자'],[/통신|KT|SKT|LGU|올레/i,'통신비'],[/관리비/,'관리비'],[/정수기|코웨이/,'정수기'],[/용돈/,'용돈'],[/넷플|유튜브|구독|멜론|와우/,'구독료']];
+const bankCat=n=>(BANK.find(r=>r[0].test(n))||[0,0])[1]||guess(n);
+function normDate(v){
+  if(v==null||v==='')return '';
+  if(typeof v==='number'&&v>20000&&v<80000)return new Date(Math.round((v-25569)*864e5)).toISOString().slice(0,10);
+  const s=String(v).trim();let m=s.match(/(\d{4})\D?(\d{1,2})\D?(\d{1,2})/);
+  if(m)return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
+  m=s.match(/^(\d{1,2})\D(\d{1,2})/);
+  return m?`${month.slice(0,4)}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`:'';
+}
+const num=v=>{const n=parseFloat(String(v).replace(/[^\d.-]/g,''));return isNaN(n)?0:n};
+/* --- 사진 --- */
+const ocrPrompt=kind=>`너는 한국 가계부 OCR 전문가다. 첨부된 것은 ${kind==='card'?'카드 이용내역 명세서':'통장 입출금/자동이체 내역'}다.
+규칙:
+1. 보이는 모든 거래 행을 위에서 아래 순서로 빠짐없이 추출한다. 한 줄도 건너뛰거나 요약·합치지 않는다.
+2. date: YYYY-MM-DD. 연도가 없으면 ${month.slice(0,4)}년으로 한다.
+3. name: 가맹점/적요를 보이는 그대로.
+4. amount: ${kind==='card'?'할인·포인트 차감 전 실제 결제 원금(할부는 이번 청구분). 양의 정수. 취소/환불 행은 음수.':'입금·출금 모두 부호 없는 양의 정수.'} 쉼표와 '원'은 뺀다. 숫자 자릿수를 특히 정확히 읽는다.
+5. cat은 반드시 다음 중 하나: ${(kind==='card'?ALL.filter(isExp):ALL).join(', ')}.${kind==='bank'?' 급여 입금은 주수입, 적금·청약은 저축 항목, 그 외 정기 출금은 고정지출 항목.':''}
+6. 이미지에 총 이용금액/청구금액 합계가 인쇄돼 있으면 printed_total에 넣고, 없으면 null.`;
+function fromModel(txt,kind,fname,warn){
+  const o=JSON.parse(txt),K=known(),list=Array.isArray(o)?o:(o.rows||[]);
+  const rows=list.map(x=>{const nm=String(x.name||'').trim(),a=+x.amount||0;
+    return{id:uid(),date:normDate(x.date),name:nm,amount:kind==='bank'?Math.abs(a):a,cat:K[nm]||(ALL.includes(x.cat)?x.cat:guess(nm)),memo:'',rec:kind==='bank'}}).filter(r=>r.date&&r.name&&r.amount);
+  if(kind==='card'&&o.printed_total){const s=sum(rows);if(s!==o.printed_total)warn.push(`${fname}: 인쇄된 합계 ${won(o.printed_total)} ≠ 인식 합계 ${won(s)} (한 명세서를 여러 장으로 나눴다면 정상일 수 있어요. 아니라면 누락/오독 가능성이 있으니 확인하세요)`)}
+  return rows;
+}
+async function parseImage(f,kind,warn){
+  return fromModel(await gem([{text:ocrPrompt(kind)},{inline_data:{mime_type:f.type||'image/jpeg',data:await b64(f)}}],SCHEMA),kind,f.name,warn);
+}
+/* --- 엑셀/CSV --- */
+async function readWb(f){
+  const buf=await f.arrayBuffer();
+  if(/\.csv$/i.test(f.name)){let t;try{t=new TextDecoder('utf-8',{fatal:true}).decode(buf)}catch(e){t=new TextDecoder('euc-kr').decode(buf)}return XLSX.read(t,{type:'string'})}
+  return XLSX.read(buf,{type:'array'});
+}
+function findHeader(rows){
+  const fc=(h,re,ex)=>h.findIndex(c=>re.test(c)&&!(ex&&ex.test(c)));
+  for(let i=0;i<Math.min(rows.length,40);i++){
+    const h=rows[i].map(c=>String(c).replace(/\s/g,''));
+    const d=fc(h,/이용일|거래일|승인일|결제일|일자|날짜|일시/),n=fc(h,/가맹점|이용처|이용내역|적요|내용|거래처|상호|사용처|기재|거래기록/);
+    if(d<0||n<0)continue;
+    const ex=/할인|수수료|이자|잔액|포인트|누적|적립|개월/;let a=-1;
+    for(const re of [/결제원금/,/이용금액/,/승인금액/,/청구금액/,/결제금액/,/금액/]){a=fc(h,re,ex);if(a>=0)break}
+    const dep=fc(h,/입금|받은금액/),wd=fc(h,/출금|보낸금액|지급|찾으신/);
+    if(a>=0||dep>=0||wd>=0)return{i,d,n,a,dep,wd};
+  }
+  return null;
+}
+function sheetRows(rows,kind){
+  const H=findHeader(rows);if(!H)return null;const K=known(),out=[];
+  for(const r of rows.slice(H.i+1)){
+    const date=normDate(r[H.d]),name=String(r[H.n]).trim();
+    if(!date||!name||/합계|총계|소계/.test(name))continue;
+    let amount,cat;
+    if(kind==='card'){amount=num(r[H.a>=0?H.a:H.wd]);if(!amount)continue;cat=K[name]||guess(name)}
+    else{const dep=H.dep>=0?num(r[H.dep]):0,wd=H.wd>=0?num(r[H.wd]):0,one=H.a>=0?num(r[H.a]):0;
+      if(dep>0){amount=dep;cat=/급여|월급/.test(name)?'주수입':'부수입'}
+      else{amount=Math.abs(wd||one);if(!amount)continue;cat=K[name]||bankCat(name)}}
+    out.push({id:uid(),date,name,amount,cat,memo:'',rec:kind==='bank'});
+  }
+  return out;
+}
+async function parseSheet(f,kind,warn){
+  const wb=await readWb(f),out=[];let missed=false;
+  for(const sn of wb.SheetNames){
+    const ws=wb.Sheets[sn],rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,dateNF:'yyyy-mm-dd',defval:''}),got=sheetRows(rows,kind);
+    if(got){out.push(...got);continue}
+    if(rows.length>1)missed=true;
+    if(missed&&apiKey){ // 표 머리글을 못 찾으면 AI가 표를 읽어줌
+      const csv=XLSX.utils.sheet_to_csv(ws).slice(0,60000);
+      out.push(...fromModel(await gem([{text:ocrPrompt(kind)+'\n\n[첨부는 이미지 대신 표 데이터(CSV)]\n'+csv}],SCHEMA),kind,f.name+'('+sn+')',warn));missed=false;
+    }
+  }
+  if(!out.length)throw new Error('이용일/가맹점/금액 열을 찾지 못했어요. (API 키가 있으면 AI가 대신 읽어요)');
+  return out;
+}
+async function aiFill(rows){ // 엑셀에서 분류 못한 가맹점을 AI가 한 번에 분류
+  const names=[...new Set(rows.filter(r=>r.cat==='기타').map(r=>r.name))].slice(0,200);
+  if(!names.length||!apiKey)return;
+  try{
+    const out=JSON.parse(await gem([{text:`다음 가맹점/적요 각각을 ${ALL.join(', ')} 중 하나로 분류해 [{name,cat}] 배열로 답해. 확실하지 않으면 기타.\n`+names.join('\n')}],SCHEMA_CATS));
+    const m={};out.forEach(x=>{if(ALL.includes(x.cat))m[x.name]=x.cat});
+    rows.forEach(r=>{if(r.cat==='기타'&&m[r.name])r.cat=m[r.name]});
+  }catch(e){}
+}
+async function upload(inp,kind){
+  const files=[...inp.files];inp.value='';if(!files.length)return;
+  const busy=document.getElementById('busy'),say=t=>{busy.style.display='block';busy.textContent=t};
+  const rows=[],warn=[];
+  for(let i=0;i<files.length;i++){
+    const f=files[i];say(`${i+1}/${files.length} 분석 중… ${f.name}`);
+    try{
+      if(/\.(xlsx|xls|csv)$/i.test(f.name))rows.push(...await parseSheet(f,kind,warn));
+      else{if(!apiKey){keyBox();if(!apiKey)throw new Error('API 키가 필요해요')}rows.push(...await parseImage(f,kind,warn))}
+    }catch(e){warn.push(`${f.name}: ${e.message}`)}
+  }
+  say('분류 정리 중…');await aiFill(rows);
+  const have=new Set(tx.map(t=>`${t.date}|${t.name}|${t.amount}`));
+  const fresh=rows.filter(r=>!have.has(`${r.date}|${r.name}|${r.amount}`)),dup=rows.length-fresh.length;
+  fresh.forEach(put);
+  if(fresh.length){const c={};fresh.forEach(r=>{const m=r.date.slice(0,7);c[m]=(c[m]||0)+1});month=Object.entries(c).sort((a,b)=>b[1]-a[1])[0][0]}
+  say(`✅ ${fresh.length}건 추가${dup?` · 이미 있는 ${dup}건 제외`:''}${fresh.length?` · ${month} 로 이동`:''}`);
+  setTimeout(()=>{busy.style.display='none'},9000);
+  render();
+  if(warn.length)alert('확인이 필요해요:\n\n'+warn.join('\n\n'));
+}
+
+/* ===== 직접 입력 ===== */
+function openForm(){
+  const t=new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,10),d=t.startsWith(month)?t:month+'-01';
+  document.getElementById('mbox').innerHTML=`<b style="font-size:16px">직접 입력</b>
+  <div class="form">
+    <div><label>날짜</label><input type="date" id="f_date" value="${d}"></div>
+    <div><label>구분</label><select id="f_grp" onchange="fGrp()">${Object.keys(G).map(k=>`<option value="${k}" ${k==='living'?'selected':''}>${G[k].l}</option>`).join('')}</select></div>
+    <div><label>세부 항목</label><select id="f_cat"></select></div>
+    <div><label>금액 (원)</label><input type="number" id="f_amt" inputmode="numeric" placeholder="0"></div>
+    <div class="full"><label>내용 (가맹점)</label><input id="f_name" placeholder="예: 이마트"></div>
+    <div class="full"><label>메모</label><input id="f_memo" placeholder="선택"></div>
+    <div class="full"><label style="display:flex;gap:6px;align-items:center;color:var(--ink);font-size:14px"><input type="checkbox" id="f_rec" style="width:auto"> 매월 반복 (다음 달에 ‘고정 내역 불러오기’로 가져와요)</label></div>
+  </div>
+  <div class="row" style="justify-content:flex-end"><button onclick="closeModal()">취소</button><button onclick="saveForm(true)">저장 후 계속</button><button class="pri" onclick="saveForm(false)">저장</button></div>`;
+  fGrp();document.getElementById('modal').style.display='flex';setTimeout(()=>document.getElementById('f_name').focus(),50);
+}
+function fGrp(){const g=document.getElementById('f_grp').value;
+  document.getElementById('f_cat').innerHTML=G[g].c.map(c=>`<option>${c}</option>`).join('');
+  document.getElementById('f_rec').checked=['income','saving','fixed'].includes(g)}
+function saveForm(keep){
+  const v=i=>document.getElementById(i).value,date=v('f_date'),name=v('f_name').trim(),amount=Math.abs(+v('f_amt')||0);
+  if(!date)return alert('날짜를 선택해 주세요.');if(!name)return alert('내용(가맹점)을 입력해 주세요.');if(!amount)return alert('금액을 입력해 주세요.');
+  put({id:uid(),date,name,amount,cat:v('f_cat'),memo:v('f_memo').trim(),rec:document.getElementById('f_rec').checked});
+  month=date.slice(0,7);sel=[];render();
+  if(keep){openForm();document.getElementById('f_date').value=date}else closeModal();
+}
+
+/* ===== 모달 (드릴다운) ===== */
+function openCat(cat){const rows=cur().filter(t=>t.cat===cat),m={};rows.forEach(t=>m[t.name]=(m[t.name]||0)+t.amount);
+  const ms=Object.entries(m).sort((a,b)=>b[1]-a[1]);
+  document.getElementById('mbox').innerHTML=`<div class="row" style="justify-content:space-between"><b>${cat} · ${won(sum(rows))}</b><button onclick="closeModal()">닫기</button></div>
+  <p class="sub">가맹점별 합계</p>${ms.map(([n,v])=>`<div class="li" style="cursor:default"><span>${esc(n)}</span><span class="n">${won(v)}</span></div>`).join('')||'<p class="sub">이 달 내역이 없어요.</p>'}
+  <p class="sub" style="margin-top:14px">상세 내역</p>${rows.map(t=>`<div class="li" style="cursor:default"><span class="sub">${t.date.slice(5)}</span><span style="flex:1;margin:0 8px">${esc(t.name)}</span><span class="n">${won(t.amount)}</span></div>`).join('')}`;
+  document.getElementById('modal').style.display='flex'}
+function closeModal(){document.getElementById('modal').style.display='none'}
+let irrOpen=false;function toggleIrr(){irrOpen=!irrOpen;render()}
+
+/* ===== 렌더 ===== */
+function render(){
+  document.getElementById('month').value=month;
+  const c=cur(),by=g=>c.filter(t=>grp(t.cat)===g);
+  const inc=sum(by('income')),sav=sum(by('saving')),exp=sum(c.filter(t=>isExp(t.cat))),sur=inc-sav-exp,liv=sum(by('living')),irr=sum(by('irregular'));
+  const pct=Math.min(100,liv/BUDGET*100),over=liv>BUDGET;
+  const gc=over?'var(--bad)':pct>85?'var(--warn)':'var(--ok)';
+  document.getElementById('app').innerHTML=`
+  <div class="kpis">
+    <div class="kpi"><small>총 수입</small><b>${won(inc)}</b></div>
+    <div class="kpi"><small>총 저축 · 저축률 ${inc?Math.round(sav/inc*100):0}%</small><b>${won(sav)}</b></div>
+    <div class="kpi"><small>총 지출</small><b>${won(exp)}</b></div>
+    <div class="kpi"><small>잉여 현금 (목표 0원)</small><b class="${sur<0?'red':'green'}">${won(sur)}</b></div>
+  </div>
+  <div class="card"><div class="row" style="justify-content:space-between"><div><b>식비 + 생활용품 통합 예산</b><div class="sub">월 ${won(BUDGET)}</div></div>
+    <div class="n"><b style="font-size:18px">${won(liv)}</b><div class="sub ${over?'red':''}">${over?won(liv-BUDGET)+' 초과':won(BUDGET-liv)+' 남음'}</div></div></div>
+    <div class="gauge"><i style="width:${pct}%;background:${gc}"></i></div>
+    <div class="sub">${G.living.c.map(k=>`${k} ${won(sum(c.filter(t=>t.cat===k)))}`).join(' · ')}</div></div>
+  <div class="card"><div class="row" style="justify-content:space-between;cursor:pointer" onclick="toggleIrr()"><div><b>비정기 지출</b><div class="sub">탭해서 가맹점별 내역 보기</div></div><b>${won(irr)} ${irrOpen?'▲':'▼'}</b></div>
+    ${irrOpen?G.irregular.c.map(k=>`<div class="li" onclick="openCat('${k}')"><span>${k}</span><span class="n">${won(sum(c.filter(t=>t.cat===k)))}</span></div>`).join(''):''}</div>
+  <div class="grid2"><div class="card"><b>항목별 지출 순위</b><canvas id="c1" height="220"></canvas></div>
+    <div class="card"><b>월별 지출 추이</b><canvas id="c2" height="220"></canvas></div></div>
+  <div class="card"><div class="row" style="justify-content:space-between;margin-bottom:8px"><b>${month} 내역 (${c.length}건)</b>
+    <div class="row"><button onclick="add()">추가</button><button onclick="merge()">합치기</button><button onclick="del(sel)">선택 삭제</button><button onclick="exportFile('xlsx')">Excel</button><button onclick="exportFile('csv')">CSV</button></div></div>
+    <div class="tw"><table><tr><th></th><th>날짜</th><th>내용</th><th>항목</th><th>금액</th><th>메모</th><th>매월반복</th></tr>
+    ${c.map(t=>`<tr><td><input type="checkbox" ${sel.includes(t.id)?'checked':''} onchange="tog('${t.id}',this.checked)" style="width:auto"></td>
+    <td><input type="date" value="${t.date}" onchange="upd('${t.id}','date',this.value)"></td>
+    <td><input value="${esc(t.name)}" onchange="upd('${t.id}','name',this.value)"></td>
+    <td><select onchange="upd('${t.id}','cat',this.value)">${Object.values(G).map(g=>`<optgroup label="${g.l}">${g.c.map(k=>`<option ${k===t.cat?'selected':''}>${k}</option>`).join('')}</optgroup>`).join('')}</select></td>
+    <td><input type="number" class="n" value="${t.amount}" onchange="upd('${t.id}','amount',this.value)"></td>
+    <td><input value="${esc(t.memo)}" placeholder="메모" onchange="upd('${t.id}','memo',this.value)"></td>
+    <td><input type="checkbox" ${t.rec?'checked':''} onchange="upd('${t.id}','rec',this.checked)" style="width:auto"></td></tr>`).join('')}</table>
+    ${c.length?'':'<p class="sub" style="text-align:center;padding:24px">내역이 없어요. 명세서를 올리거나 ‘샘플 데이터’를 눌러 보세요.</p>'}</div></div>`;
+  drawCharts(c);
+}
+function drawCharts(c){
+  charts.forEach(x=>x.destroy());charts=[];
+  const m={};c.filter(t=>isExp(t.cat)).forEach(t=>m[t.cat]=(m[t.cat]||0)+t.amount);
+  const r=Object.entries(m).sort((a,b)=>b[1]-a[1]);
+  charts.push(new Chart(document.getElementById('c1'),{type:'bar',data:{labels:r.map(x=>x[0]),datasets:[{data:r.map(x=>x[1]),backgroundColor:'#f59e0b',borderRadius:6}]},
+    options:{indexAxis:'y',plugins:{legend:{display:false},tooltip:{callbacks:{label:i=>won(i.raw)}}},scales:{x:{display:false},y:{grid:{display:false}}}}}));
+  const ms=[...new Set(tx.map(t=>t.date.slice(0,7)))].sort();
+  charts.push(new Chart(document.getElementById('c2'),{type:'bar',
+    data:{labels:ms.map(x=>x.slice(5)+'월'),datasets:['fixed','living','irregular','etc'].map(g=>({label:G[g].l,backgroundColor:COL[g],data:ms.map(x=>sum(tx.filter(t=>t.date.startsWith(x)&&grp(t.cat)===g)))}))},
+    options:{plugins:{tooltip:{callbacks:{label:i=>`${i.dataset.label} ${won(i.raw)}`}}},scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,ticks:{callback:v=>v/10000+'만'}}}}}));
+}
+render();connect();
+</script>
+</body>
+</html>
