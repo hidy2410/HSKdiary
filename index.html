@@ -58,6 +58,7 @@ td input:focus{background:#fff;border-color:var(--line)}
       <label class="btn">카드 명세서 (사진/엑셀)<input type="file" accept="image/*,.xlsx,.xls,.csv" multiple hidden onchange="upload(this,'card')"></label>
       <label class="btn">통장 캡처 (사진/엑셀)<input type="file" accept="image/*,.xlsx,.xls,.csv" multiple hidden onchange="upload(this,'bank')"></label>
       <button onclick="loadFixed()">지난달 고정 내역 불러오기</button>
+      <button onclick="reclass()">기타 자동분류</button>
       <button onclick="sample()">샘플 데이터</button>
       <button onclick="keyBox()">API 키</button>
       <button onclick="roomBox()">방 코드</button>
@@ -89,8 +90,30 @@ const isExp=c=>['fixed','living','irregular','etc'].includes(grp(c));
 const won=n=>(n||0).toLocaleString('ko-KR')+'원';
 const uid=()=>Math.random().toString(36).slice(2,10);
 const COL={fixed:'#94a3b8',living:'#f59e0b',irregular:'#e879a0',etc:'#cbd5e1'};
-const RULES=[[/쿠팡|마트|배달|GS25|CU|푸드|식당|카페|빵/i,'식비'],[/다이소|올리브영|모던하우스|이케아/i,'생활용품'],[/유니클로|LF|무신사|자라|의류/i,'꾸밈'],[/항공|호텔|숙박|여행|코레일/i,'여행'],[/영화|CGV|도서|교보|공연/i,'문화생활'],[/병원|의원|약국|치과/i,'건강']];
-const guess=n=>(RULES.find(r=>r[0].test(n))||[0,'기타'])[1];
+const CAT_GUIDE=`분류 기준(상호명의 업종을 상식으로 추론해서 분류):
+- 식비: 음식점·카페·편의점·베이커리·배달·술집·마트·식료품 등 먹고 마시는 모든 곳
+- 생활용품: 쿠팡 등 온라인몰, 다이소, 생활잡화, 가구, 세제, 화장품, 문구
+- 꾸밈: 의류, 신발, 패션, 미용실, 네일, 안경
+- 여행: 항공, 숙박, 기차·고속버스, 렌터카, 관광
+- 문화생활: 영화, 공연, 도서, 당구·볼링·PC방·노래방 등 오락, 운동·스포츠 시설, 취미
+- 건강: 병원, 약국, 치과, 한의원
+- 경조사: 축의금, 조의금, 화환
+- 구독료: 넷플릭스, 유튜브 프리미엄 등 정기 구독
+- 기타: 위 어디에도 속하지 않을 때만(주유, 주차, 세금 등)`;
+/* 위에서부터 먼저 맞는 규칙이 적용돼요. 내가 직접 바꾼 가맹점 분류는 항상 최우선으로 기억해요. */
+const RULES=[
+ [/쿠팡이츠|배달의민족|배민|요기요|땡겨요/,'식비'],
+ [/넷플릭스|NETFLIX|유튜브\s?프리미엄|YOUTUBE\s?PREMIUM|왓챠|웨이브|티빙|디즈니\s?플러스|DISNEY|스포티파이|SPOTIFY|밀리의\s?서재|클래스101|GOOGLE\s?ONE|쿠팡\s?와우/i,'구독료'],
+ [/쿠팡|COUPANG|다이소|DAISO|올리브영|이케아|IKEA|모던하우스|한샘|아트박스|무인양품|MUJI|오늘의집|11번가|지마켓|G마켓|옥션|SSG|쓱닷컴|롯데온|알리익스프레스|ALIEXPRESS|테무|TEMU|홈쇼핑|문구|철물|세탁|드럭|롭스|LOHB|생활용품|인테리어|가구|침구|주방/i,'생활용품'],
+ [/병원|의원|약국|치과|한의|내과|외과|소아과|이비인후|피부과|정형|안과|산부인과|비뇨|의료|메디|클리닉|CLINIC|HOSPITAL|PHARM|건강검진|물리치료|재활|보건소|온누리|한약/i,'건강'],
+ [/화환|근조|축의|조의|부조|경조|장례|예식|웨딩|플라워|FLOWER|꽃집|꽃배달/i,'경조사'],
+ [/항공|아시아나|제주항공|진에어|티웨이|에어부산|호텔|리조트|펜션|숙박|모텔|야놀자|여기어때|에어비앤비|AIRBNB|아고다|AGODA|부킹닷컴|BOOKING|코레일|KORAIL|KTX|SRT|고속버스|버스터미널|렌터카|쏘카|그린카|면세|트립|투어|관광|스키장|워터파크|캠핑|글램핑|여행/i,'여행'],
+ [/영화|CGV|메가박스|롯데시네마|당구|볼링|스크린골프|골프|노래|PC방|피씨방|오락|게임|STEAM|스팀|플레이스테이션|닌텐도|방탈출|보드게임|만화|도서|교보문고|영풍문고|알라딘|예스24|YES24|서점|공연|콘서트|티켓|인터파크|전시|박물관|미술관|동물원|수족관|놀이공원|에버랜드|롯데월드|찜질|사우나|스파(?!오)|헬스|피트니스|필라테스|요가|수영|클라이밍|탁구|테니스|배드민턴|체육|스포츠|낚시|키즈카페|뮤지컬|연극|문화/i,'문화생활'],
+ [/유니클로|UNIQLO|ZARA|자라(?!섬)|H&M|무신사|지그재그|에이블리|스파오|탑텐|8세컨|뉴발란스|나이키|NIKE|아디다스|ADIDAS|(?<![A-Za-z])LF|이랜드|패션|의류|슈즈|신발|미용실|헤어|네일|뷰티|에스테틱|피부관리|안경|렌즈|쥬얼리|악세사리|가방|백화점/i,'꾸밈'],
+ [/세븐일레븐|(?<![A-Za-z])GS\s?25|지에스25|(?<![A-Za-z])CU(?![A-Za-z])|씨유|이마트\s?24|미니스톱|7\s?-?ELEVEN|스타벅스|메가\s?(MGC)?\s?커피|메가엠지씨|컴포즈|빽다방|이디야|투썸|할리스|폴바셋|파스쿠찌|탐앤탐스|바나프레소|더벤티|공차|설빙|배스킨|던킨|파리바게|뚜레쥬르|커피|카페|CAFE|COFFEE|베이커리|제과|도넛|디저트|아이스크림|빵|아웃백|빕스|VIPS|애슐리|롯데리아|맥도날드|버거킹|KFC|맘스터치|서브웨이|파파존스|도미노|피자|치킨|BBQ|BHC|교촌|굽네|푸라닭|족발|보쌈|김밥|분식|떡볶이|국밥|설렁탕|순대|식당|반점|짬뽕|초밥|스시|라멘|돈까스|돈가스|고기|갈비|삼겹|곱창|횟집|냉면|칼국수|국수|파스타|샐러드|한솥|본죽|마라|쌀국수|스테이크|레스토랑|뷔페|주점|호프|맥주|포차|이자카야|술집|도시락|반찬|푸드|이마트|롯데마트|홈플러스|트레이더스|코스트코|COSTCO|하나로|마트|슈퍼|마켓컬리|컬리|오아시스|정육|청과|과일|수산|농산|식자재|우유|두부|한식|중식|일식|양식|밥/i,'식비'],
+];
+const ruleCat=n=>{const r=RULES.find(x=>x[0].test(n));return r?r[1]:null};
+const guess=n=>ruleCat(n)||'기타';
 
 /* ===== 상태 ===== */
 const d0=new Date();
@@ -196,11 +219,12 @@ const ocrPrompt=kind=>`너는 한국 가계부 OCR 전문가다. 첨부된 것�
 3. name: 가맹점/적요를 보이는 그대로.
 4. amount: ${kind==='card'?'할인·포인트 차감 전 실제 결제 원금(할부는 이번 청구분). 양의 정수. 취소/환불 행은 음수.':'입금·출금 모두 부호 없는 양의 정수.'} 쉼표와 '원'은 뺀다. 숫자 자릿수를 특히 정확히 읽는다.
 5. cat은 반드시 다음 중 하나: ${(kind==='card'?ALL.filter(isExp):ALL).join(', ')}.${kind==='bank'?' 급여 입금은 주수입, 적금·청약은 저축 항목, 그 외 정기 출금은 고정지출 항목.':''}
-6. 이미지에 총 이용금액/청구금액 합계가 인쇄돼 있으면 printed_total에 넣고, 없으면 null.`;
+6. 이미지에 총 이용금액/청구금액 합계가 인쇄돼 있으면 printed_total에 넣고, 없으면 null.
+${CAT_GUIDE}`;
 function fromModel(txt,kind,fname,warn){
   const o=JSON.parse(txt),K=known(),list=Array.isArray(o)?o:(o.rows||[]);
   const rows=list.map(x=>{const nm=String(x.name||'').trim(),a=+x.amount||0;
-    return{id:uid(),date:normDate(x.date),name:nm,amount:kind==='bank'?Math.abs(a):a,cat:K[nm]||(ALL.includes(x.cat)?x.cat:guess(nm)),memo:'',rec:kind==='bank'}}).filter(r=>r.date&&r.name&&r.amount);
+    return{id:uid(),date:normDate(x.date),name:nm,amount:kind==='bank'?Math.abs(a):a,cat:K[nm]||ruleCat(nm)||(ALL.includes(x.cat)?x.cat:'기타'),memo:'',rec:kind==='bank'}}).filter(r=>r.date&&r.name&&r.amount);
   if(kind==='card'&&o.printed_total){const s=sum(rows);if(s!==o.printed_total)warn.push(`${fname}: 인쇄된 합계 ${won(o.printed_total)} ≠ 인식 합계 ${won(s)} (한 명세서를 여러 장으로 나눴다면 정상일 수 있어요. 아니라면 누락/오독 가능성이 있으니 확인하세요)`)}
   return rows;
 }
@@ -254,14 +278,21 @@ async function parseSheet(f,kind,warn){
   if(!out.length)throw new Error('이용일/가맹점/금액 열을 찾지 못했어요. (API 키가 있으면 AI가 대신 읽어요)');
   return out;
 }
-async function aiFill(rows){ // 엑셀에서 분류 못한 가맹점을 AI가 한 번에 분류
+async function aiFill(rows,kind){ // 엑셀에서 분류 못한 가맹점을 AI가 한 번에 분류
   const names=[...new Set(rows.filter(r=>r.cat==='기타').map(r=>r.name))].slice(0,200);
-  if(!names.length||!apiKey)return;
+  if(kind==='bank'||!names.length||!apiKey)return;
   try{
-    const out=JSON.parse(await gem([{text:`다음 가맹점/적요 각각을 ${ALL.join(', ')} 중 하나로 분류해 [{name,cat}] 배열로 답해. 확실하지 않으면 기타.\n`+names.join('\n')}],SCHEMA_CATS));
+    const out=JSON.parse(await gem([{text:`다음 가맹점/적요 각각을 ${ALL.join(', ')} 중 하나로 분류해 [{name,cat}] 배열로 답해.\n${CAT_GUIDE}\n\n`+names.join('\n')}],SCHEMA_CATS));
     const m={};out.forEach(x=>{if(ALL.includes(x.cat))m[x.name]=x.cat});
     rows.forEach(r=>{if(r.cat==='기타'&&m[r.name])r.cat=m[r.name]});
   }catch(e){}
+}
+async function reclass(){
+  const rows=cur().filter(t=>t.cat==='기타'&&t.amount>0);let n=0;
+  rows.forEach(t=>{const c=ruleCat(t.name);if(c){t.cat=c;put(t);n++}});
+  const left=rows.filter(t=>t.cat==='기타');
+  if(left.length&&apiKey){await aiFill(left,'card');left.forEach(t=>{if(t.cat!=='기타'){put(t);n++}})}
+  render();alert(`${n}건을 자동 분류했어요.`+(left.length&&!apiKey?'\n(남은 항목은 API 키가 있으면 AI가 분류해요)':''));
 }
 async function upload(inp,kind){
   const files=[...inp.files];inp.value='';if(!files.length)return;
@@ -274,7 +305,7 @@ async function upload(inp,kind){
       else{if(!apiKey){keyBox();if(!apiKey)throw new Error('API 키가 필요해요')}rows.push(...await parseImage(f,kind,warn))}
     }catch(e){warn.push(`${f.name}: ${e.message}`)}
   }
-  say('분류 정리 중…');await aiFill(rows);
+  say('분류 정리 중…');await aiFill(rows,kind);
   const have=new Set(tx.map(t=>`${t.date}|${t.name}|${t.amount}`));
   const fresh=rows.filter(r=>!have.has(`${r.date}|${r.name}|${r.amount}`)),dup=rows.length-fresh.length;
   fresh.forEach(put);
