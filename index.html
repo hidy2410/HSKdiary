@@ -163,7 +163,11 @@ function exportFile(type){const rows=cur().map(t=>({날짜:t.date,구분:G[grp(t
   const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(rows),month);XLSX.writeFile(wb,`가계부_${month}.${type}`,{bookType:type})}
 
 /* ===== Gemini OCR ===== */
-const b64=f=>new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(',')[1]);r.onerror=rej;r.readAsDataURL(f)});
+const ep=apiKey.startsWith('AQ.')
+      ?`https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent?key=${apiKey}`
+      :`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+    const r=await fetch(ep,
+      {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{parts}],generationConfig:{responseMimeType:'application/json'}})});
 function keyBox(){const k=prompt('Gemini API 키를 입력하세요 (이 브라우저에만 저장돼요)',apiKey);if(k!==null){apiKey=k.trim();localStorage.setItem('gkey',apiKey)}}
 async function upload(inp,kind){
   const files=[...inp.files];inp.value='';if(!files.length)return;
