@@ -83,13 +83,13 @@ const firebaseConfig = {
 /* ===== 설정 ===== */
 const G={income:{l:'수입',c:['주수입','부수입']},saving:{l:'저축',c:['적금','청약','목적저금']},
 fixed:{l:'고정지출',c:['대출이자','통신비','관리비','정수기','용돈','구독료']},
-living:{l:'식비+생활용품',c:['식비','생활용품']},irregular:{l:'비정기 지출',c:['꾸밈','여행','문화생활','건강','경조사']},etc:{l:'기타',c:['기타']}};
+living:{l:'식비+생활용품',c:['식비','생활용품']},irregular:{l:'비정기 지출',c:['꾸밈','여행','문화생활','건강','경조사']},transport:{l:'교통비',c:['교통비']},etc:{l:'기타',c:['기타']}};
 const ALL=Object.values(G).flatMap(g=>g.c), BUDGET=600000;
 const grp=c=>Object.keys(G).find(k=>G[k].c.includes(c))||'etc';
-const isExp=c=>['fixed','living','irregular','etc'].includes(grp(c));
+const isExp=c=>['fixed','living','irregular','transport','etc'].includes(grp(c));
 const won=n=>(n||0).toLocaleString('ko-KR')+'원';
 const uid=()=>Math.random().toString(36).slice(2,10);
-const COL={fixed:'#94a3b8',living:'#f59e0b',irregular:'#e879a0',etc:'#cbd5e1'};
+const COL={fixed:'#94a3b8',living:'#f59e0b',irregular:'#e879a0',transport:'#60a5fa',etc:'#cbd5e1'};
 const CAT_GUIDE=`분류 기준(상호명의 업종을 상식으로 추론해서 분류):
 - 식비: 음식점·카페·편의점·베이커리·배달·술집·마트·식료품 등 먹고 마시는 모든 곳
 - 생활용품: 쿠팡 등 온라인몰, 다이소, 생활잡화, 가구, 세제, 화장품, 문구
@@ -99,7 +99,8 @@ const CAT_GUIDE=`분류 기준(상호명의 업종을 상식으로 추론해서 
 - 건강: 병원, 약국, 치과, 한의원
 - 경조사: 축의금, 조의금, 화환
 - 구독료: 넷플릭스, 유튜브 프리미엄 등 정기 구독
-- 기타: 위 어디에도 속하지 않을 때만(주유, 주차, 세금 등)`;
+- 교통비: 주유, 주차, 택시, 대중교통, 통행료, 자동차 정비·세차
+- 기타: 위 어디에도 속하지 않을 때만(세금, 수수료 등)`;
 /* 위에서부터 먼저 맞는 규칙이 적용돼요. 내가 직접 바꾼 가맹점 분류는 항상 최우선으로 기억해요. */
 const RULES=[
  [/쿠팡이츠|배달의민족|배민|요기요|땡겨요/,'식비'],
@@ -108,6 +109,7 @@ const RULES=[
  [/병원|의원|약국|치과|한의|내과|외과|소아과|이비인후|피부과|정형|안과|산부인과|비뇨|의료|메디|클리닉|CLINIC|HOSPITAL|PHARM|건강검진|물리치료|재활|보건소|온누리|한약/i,'건강'],
  [/화환|근조|축의|조의|부조|경조|장례|예식|웨딩|플라워|FLOWER|꽃집|꽃배달/i,'경조사'],
  [/항공|아시아나|제주항공|진에어|티웨이|에어부산|호텔|리조트|펜션|숙박|모텔|야놀자|여기어때|에어비앤비|AIRBNB|아고다|AGODA|부킹닷컴|BOOKING|코레일|KORAIL|KTX|SRT|고속버스|버스터미널|렌터카|쏘카|그린카|면세|트립|투어|관광|스키장|워터파크|캠핑|글램핑|여행/i,'여행'],
+ [/주유|GS칼텍스|SK에너지|S-?OIL|에쓰오일|현대오일뱅크|알뜰주유|충전소|주차|파킹|택시|카카오\s?T|티머니|T-?MONEY|버스|지하철|교통|하이패스|통행료|도로공사|세차|자동차|정비|타이어|카센터/i,'교통비'],
  [/영화|CGV|메가박스|롯데시네마|당구|볼링|스크린골프|골프|노래|PC방|피씨방|오락|게임|STEAM|스팀|플레이스테이션|닌텐도|방탈출|보드게임|만화|도서|교보문고|영풍문고|알라딘|예스24|YES24|서점|공연|콘서트|티켓|인터파크|전시|박물관|미술관|동물원|수족관|놀이공원|에버랜드|롯데월드|찜질|사우나|스파(?!오)|헬스|피트니스|필라테스|요가|수영|클라이밍|탁구|테니스|배드민턴|체육|스포츠|낚시|키즈카페|뮤지컬|연극|문화/i,'문화생활'],
  [/유니클로|UNIQLO|ZARA|자라(?!섬)|H&M|무신사|지그재그|에이블리|스파오|탑텐|8세컨|뉴발란스|나이키|NIKE|아디다스|ADIDAS|(?<![A-Za-z])LF|이랜드|패션|의류|슈즈|신발|미용실|헤어|네일|뷰티|에스테틱|피부관리|안경|렌즈|쥬얼리|악세사리|가방|백화점/i,'꾸밈'],
  [/세븐일레븐|(?<![A-Za-z])GS\s?25|지에스25|(?<![A-Za-z])CU(?![A-Za-z])|씨유|이마트\s?24|미니스톱|7\s?-?ELEVEN|스타벅스|메가\s?(MGC)?\s?커피|메가엠지씨|컴포즈|빽다방|이디야|투썸|할리스|폴바셋|파스쿠찌|탐앤탐스|바나프레소|더벤티|공차|설빙|배스킨|던킨|파리바게|뚜레쥬르|커피|카페|CAFE|COFFEE|베이커리|제과|도넛|디저트|아이스크림|빵|아웃백|빕스|VIPS|애슐리|롯데리아|맥도날드|버거킹|KFC|맘스터치|서브웨이|파파존스|도미노|피자|치킨|BBQ|BHC|교촌|굽네|푸라닭|족발|보쌈|김밥|분식|떡볶이|국밥|설렁탕|순대|식당|반점|짬뽕|초밥|스시|라멘|돈까스|돈가스|고기|갈비|삼겹|곱창|횟집|냉면|칼국수|국수|파스타|샐러드|한솥|본죽|마라|쌀국수|스테이크|레스토랑|뷔페|주점|호프|맥주|포차|이자카야|술집|도시락|반찬|푸드|이마트|롯데마트|홈플러스|트레이더스|코스트코|COSTCO|하나로|마트|슈퍼|마켓컬리|컬리|오아시스|정육|청과|과일|수산|농산|식자재|우유|두부|한식|중식|일식|양식|밥/i,'식비'],
@@ -179,16 +181,16 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const T=t=>({type:t});
 const SCHEMA={type:'OBJECT',properties:{rows:{type:'ARRAY',items:{type:'OBJECT',properties:{date:T('STRING'),name:T('STRING'),amount:T('INTEGER'),cat:T('STRING')},required:['date','name','amount','cat']}},printed_total:{type:'INTEGER',nullable:true}},required:['rows']};
 const SCHEMA_CATS={type:'ARRAY',items:{type:'OBJECT',properties:{name:T('STRING'),cat:T('STRING')},required:['name','cat']}};
-let useSchema=true;
+let useSchema=true,okModel=null;
 async function gem(parts,schema){
   let lastErr='';
-  for(const m of MODELS){
+  for(const m of (okModel?[okModel,...MODELS.filter(x=>x!==okModel)]:MODELS)){
     for(let a=0;a<3;a++){
       const cfg={temperature:0,maxOutputTokens:16384,responseMimeType:'application/json'};
       if(useSchema&&schema)cfg.responseSchema=schema;
       const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`,
         {method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':apiKey},body:JSON.stringify({contents:[{role:'user',parts}],generationConfig:cfg})});
-      if(r.ok){const j=await r.json();const c=j.candidates&&j.candidates[0];if(!c||!c.content)throw new Error('모델이 결과를 돌려주지 않았어요 (이미지가 차단되었을 수 있어요)');return c.content.parts.map(p=>p.text||'').join('').replace(/```json|```/g,'')}
+      if(r.ok){okModel=m;const j=await r.json();const c=j.candidates&&j.candidates[0];if(!c||!c.content)throw new Error('모델이 결과를 돌려주지 않았어요 (이미지가 차단되었을 수 있어요)');return c.content.parts.map(p=>p.text||'').join('').replace(/```json|```/g,'')}
       const b=await r.json().catch(()=>({}));lastErr=`${r.status} ${(b.error&&b.error.message)||''}`;
       if(r.status===400&&useSchema&&schema){useSchema=false;a--;continue}
       if(r.status===404)break;
@@ -229,7 +231,14 @@ function fromModel(txt,kind,fname,warn){
   return rows;
 }
 async function parseImage(f,kind,warn){
-  return fromModel(await gem([{text:ocrPrompt(kind)},{inline_data:{mime_type:f.type||'image/jpeg',data:await b64(f)}}],SCHEMA),kind,f.name,warn);
+  return fromModel(await gem([{text:ocrPrompt(kind)},{inline_data:await shrink(f)}],SCHEMA),kind,f.name,warn);
+}
+async function shrink(f){ // 큰 사진은 가로 1800px로 줄여 전송 속도를 높여요
+  try{const bm=await createImageBitmap(f),k=Math.min(1,1800/bm.width);
+    if(k>=1&&f.size<1500000)return{mime_type:f.type||'image/jpeg',data:await b64(f)};
+    const c=document.createElement('canvas');c.width=Math.round(bm.width*k);c.height=Math.round(bm.height*k);c.getContext('2d').drawImage(bm,0,0,c.width,c.height);
+    return{mime_type:'image/jpeg',data:c.toDataURL('image/jpeg',0.85).split(',')[1]}
+  }catch(e){return{mime_type:f.type||'image/jpeg',data:await b64(f)}}
 }
 /* --- 엑셀/CSV --- */
 async function readWb(f){
@@ -298,13 +307,20 @@ async function upload(inp,kind){
   const files=[...inp.files];inp.value='';if(!files.length)return;
   const busy=document.getElementById('busy'),say=t=>{busy.style.display='block';busy.textContent=t};
   const rows=[],warn=[];
-  for(let i=0;i<files.length;i++){
-    const f=files[i];say(`${i+1}/${files.length} 분석 중… ${f.name}`);
-    try{
-      if(/\.(xlsx|xls|csv)$/i.test(f.name))rows.push(...await parseSheet(f,kind,warn));
-      else{if(!apiKey){keyBox();if(!apiKey)throw new Error('API 키가 필요해요')}rows.push(...await parseImage(f,kind,warn))}
-    }catch(e){warn.push(`${f.name}: ${e.message}`)}
-  }
+  if(!apiKey&&files.some(f=>!/\.(xlsx|xls|csv)$/i.test(f.name)))keyBox();
+  let idx=0,done=0;
+  const worker=async()=>{ // 3장씩 동시에 처리
+    while(idx<files.length){
+      const f=files[idx++];
+      try{
+        if(/\.(xlsx|xls|csv)$/i.test(f.name))rows.push(...await parseSheet(f,kind,warn));
+        else{if(!apiKey)throw new Error('API 키가 필요해요');rows.push(...await parseImage(f,kind,warn))}
+      }catch(e){warn.push(`${f.name}: ${e.message}`)}
+      say(`${++done}/${files.length} 완료…`);
+    }
+  };
+  say(`0/${files.length} 분석 중…`);
+  await Promise.all([worker(),worker(),worker()]);
   say('분류 정리 중…');await aiFill(rows,kind);
   const have=new Set(tx.map(t=>`${t.date}|${t.name}|${t.amount}`));
   const fresh=rows.filter(r=>!have.has(`${r.date}|${r.name}|${r.amount}`)),dup=rows.length-fresh.length;
@@ -396,7 +412,7 @@ function drawCharts(c){
     options:{indexAxis:'y',plugins:{legend:{display:false},tooltip:{callbacks:{label:i=>won(i.raw)}}},scales:{x:{display:false},y:{grid:{display:false}}}}}));
   const ms=[...new Set(tx.map(t=>t.date.slice(0,7)))].sort();
   charts.push(new Chart(document.getElementById('c2'),{type:'bar',
-    data:{labels:ms.map(x=>x.slice(5)+'월'),datasets:['fixed','living','irregular','etc'].map(g=>({label:G[g].l,backgroundColor:COL[g],data:ms.map(x=>sum(tx.filter(t=>t.date.startsWith(x)&&grp(t.cat)===g)))}))},
+    data:{labels:ms.map(x=>x.slice(5)+'월'),datasets:['fixed','living','irregular','transport','etc'].map(g=>({label:G[g].l,backgroundColor:COL[g],data:ms.map(x=>sum(tx.filter(t=>t.date.startsWith(x)&&grp(t.cat)===g)))}))},
     options:{plugins:{tooltip:{callbacks:{label:i=>`${i.dataset.label} ${won(i.raw)}`}}},scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,ticks:{callback:v=>v/10000+'만'}}}}}));
 }
 render();connect();
