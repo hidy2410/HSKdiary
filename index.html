@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>해성수경 가계부</title>
+<title>우리 부부 가계부</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
@@ -105,7 +105,7 @@ let db=null,unsub=null,room=localStorage.getItem('room')||'0314';
 const fbOn=()=>!!(firebaseConfig.apiKey&&firebaseConfig.projectId);
 const col=()=>db.collection('rooms').doc(room).collection('tx');
 const setSync=t=>{const e=document.getElementById('sync');if(e)e.textContent=t};
-const saveKey=k=>{apiKey=k;localStorage.setItem('gkey',k);if(db&&room)db.collection('rooms').doc(room).set({gkey:k},{merge:true}).catch(e=>alert('키를 공유 방에 저장하지 못했어요('+e.code+'). 이 기기에서는 사용 가능해요. Firestore 규칙을 확인해 주세요.'))};
+const saveKey=k=>{apiKey=k;localStorage.setItem('gkey',k);if(db&&room)db.collection('rooms').doc(room).set({gkey:k},{merge:true}).catch(()=>{})};
 function put(t){const i=tx.findIndex(x=>x.id===t.id);if(i<0)tx.push(t);else tx[i]=t;save();if(db&&room)col().doc(t.id).set(t).catch(e=>setSync('🔴 저장 실패: '+e.code))}
 function rmv(id){tx=tx.filter(x=>x.id!==id);save();if(db&&room)col().doc(id).delete().catch(e=>setSync('🔴 삭제 실패: '+e.code))}
 function roomBox(){
@@ -161,17 +161,18 @@ async function upload(inp,kind){
    :`통장 입금/자동이체 캡처다. 날짜(YYYY-MM-DD, 연도가 없으면 ${month.slice(0,4)}), 항목명, 금액(양의 정수)을 추출하고 cat을 다음 중 하나로 분류해: ${cats.join(', ')}. 급여 입금은 수입, 적금·청약은 저축, 그 외는 고정지출. JSON 배열만 출력: [{"date","name","amount","cat"}]`;
   try{
     const parts=[{text:prompt}];for(const f of files)parts.push({inline_data:{mime_type:f.type||'image/jpeg',data:await b64(f)}});
-    let j=null,lastErr='';
-    for(const m of ['gemini-3.6-flash','gemini-3.5-flash','gemini-2.5-flash']){
-      const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`,
-        {method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':apiKey},
-         body:JSON.stringify({contents:[{role:'user',parts}],generationConfig:{responseMimeType:'application/json'}})});
-      if(r.ok){j=await r.json();break}
+    const isAQ=apiKey.startsWith('AQ.');
+    const ep=isAQ
+      ?`https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent?key=${apiKey}`
+      :`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+    const r=await fetch(ep,
+      {method:'POST',headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({contents:[{role:'user',parts}],generationConfig:{responseMimeType:'application/json'}})});
+    if(!r.ok){
       const body=await r.json().catch(()=>({}));
-      lastErr=`${r.status} ${(body.error&&body.error.message)||''}`;
-      if(r.status!==404)throw new Error(lastErr);
+      throw new Error(`${r.status} ${(body.error&&body.error.message)||''}`);
     }
-    if(!j)throw new Error(lastErr);
+    const j=await r.json();
     const rows=JSON.parse(j.candidates[0].content.parts[0].text.replace(/```json|```/g,''));
     rows.map(x=>({id:uid(),date:x.date,name:x.name,amount:Math.abs(+x.amount||0),cat:ALL.includes(x.cat)?x.cat:guess(x.name),memo:'',rec:kind==='bank'})).forEach(put);
   }catch(e){alert('인식에 실패했어요:\n'+e.message)}
