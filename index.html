@@ -59,9 +59,12 @@ td input:focus{background:#fff;border-color:var(--line)}
       <label class="btn">통장 캡처 (사진/엑셀)<input type="file" accept="image/*,.xlsx,.xls,.csv" multiple hidden onchange="upload(this,'bank')"></label>
       <button onclick="loadFixed()">지난달 고정 내역 불러오기</button>
       <button onclick="reclass()">기타 자동분류</button>
+      <button onclick="dedupeExisting()">중복 정리</button>
       <button onclick="sample()">샘플 데이터</button>
       <button onclick="keyBox()">API 키</button>
       <button onclick="roomBox()">방 코드</button>
+      <button onclick="backup()">백업</button>
+      <label class="btn">복원<input type="file" accept=".json" hidden onchange="restore(this)"></label>
     </div>
   </div>
   <div id="busy"></div>
@@ -119,11 +122,13 @@ const guess=n=>ruleCat(n)||'기타';
 
 /* ===== 상태 ===== */
 const d0=new Date();
-let month=`${d0.getFullYear()}-${String(d0.getMonth()+1).padStart(2,'0')}`;
-let tx=JSON.parse(localStorage.getItem('ledger')||'[]');
+let month=localStorage.getItem('month')||`${d0.getFullYear()}-${String(d0.getMonth()+1).padStart(2,'0')}`;
+let tx=[];try{tx=JSON.parse(localStorage.getItem('ledger')||'[]').filter(x=>x&&x.id&&typeof x.date==='string'&&/^\d{4}-\d{2}/.test(x.date))}catch(e){tx=[]}
 let apiKey=localStorage.getItem('gkey')||'';
 let sel=[], charts=[];
-const save=()=>localStorage.setItem('ledger',JSON.stringify(tx));
+let view=localStorage.getItem('view')||'date',dir=localStorage.getItem('dir')||'desc';
+function setView(v){if(v==='date'&&view==='date')dir=dir==='desc'?'asc':'desc';else view=v;localStorage.setItem('view',view);localStorage.setItem('dir',dir);render()}
+const save=()=>{try{localStorage.setItem('ledger',JSON.stringify(tx))}catch(e){}};
 
 /* ===== Firestore 동기화 ===== */
 let db=null,unsub=null,room=localStorage.getItem('room')||'0314';
@@ -131,12 +136,24 @@ const fbOn=()=>!!(firebaseConfig.apiKey&&firebaseConfig.projectId);
 const col=()=>db.collection('rooms').doc(room).collection('tx');
 const setSync=t=>{const e=document.getElementById('sync');if(e)e.textContent=t};
 const saveKey=k=>{apiKey=k;localStorage.setItem('gkey',k);if(db&&room)db.collection('rooms').doc(room).set({gkey:k},{merge:true}).catch(e=>alert('키를 공유 방에 저장하지 못했어요('+e.code+'). 이 기기에서는 사용 가능해요. Firestore 규칙을 확인해 주세요.'))};
-function put(t){const i=tx.findIndex(x=>x.id===t.id);if(i<0)tx.push(t);else tx[i]=t;save();if(db&&room)col().doc(t.id).set(t).catch(e=>setSync('🔴 저장 실패: '+e.code))}
-function rmv(id){tx=tx.filter(x=>x.id!==id);save();if(db&&room)col().doc(id).delete().catch(e=>setSync('🔴 삭제 실패: '+e.code))}
+const validTx=x=>!!(x&&x.id&&typeof x.date==='string'&&/^\d{4}-\d{2}/.test(x.date));
+const fixTx=x=>({id:String(x.id),date:x.date,name:String(x.name==null?'':x.name),amount:+x.amount||0,cat:ALL.includes(x.cat)?x.cat:'기타',memo:String(x.memo||''),rec:!!x.rec});
+const clean=t=>JSON.parse(JSON.stringify(t));
+function put(t){
+  const i=tx.findIndex(x=>x.id===t.id);if(i<0)tx.push(t);else tx[i]=t;save();
+  if(db&&room){try{col().doc(t.id).set(clean(t)).catch(e=>setSync('🔴 저장 실패: '+e.code))}catch(e){setSync('🔴 저장 실패: '+e.message)}}
+}
+function rmv(id){
+  tx=tx.filter(x=>x.id!==id);save();
+  if(db&&room){try{col().doc(id).delete().catch(e=>setSync('🔴 삭제 실패: '+e.code))}catch(e){setSync('🔴 삭제 실패: '+e.message)}}
+}
 function roomBox(){
   if(!fbOn())return alert('firebaseConfig 설정값을 확인해 주세요.');
   const r=prompt('부부가 함께 쓸 방 코드를 입력하세요.',room);
   if(r!==null){room=r.trim();localStorage.setItem('room',room);connect()}
+}
+function autoMonth(){ // 이번 달에 내역이 없으면, 내역이 있는 가장 최근 달로 자동 이동
+  if(!cur().length&&tx.length){const ms=[...new Set(tx.map(t=>t.date.slice(0,7)))].sort();month=ms[ms.length-1];localStorage.setItem('month',month)}
 }
 function connect(){
   if(unsub){unsub();unsub=null}
@@ -144,19 +161,39 @@ function connect(){
   if(!room){setSync('방 코드를 입력하면 공유돼요');return}
   try{
     if(!db){firebase.initializeApp(firebaseConfig);db=firebase.firestore()}
-    let first=true;setSync('연결 중…');
+    let firstDone=false;setSync('연결 중…');
     db.collection('rooms').doc(room).onSnapshot(d=>{if(d.exists&&d.data().gkey){apiKey=d.data().gkey;localStorage.setItem('gkey',apiKey)}},()=>{});
     unsub=col().onSnapshot(s=>{
-      if(first){first=false;
-        if(s.empty&&tx.length&&confirm(`이 기기의 기존 내역 ${tx.length}건을 공유 가계부 "${room}"에 올릴까요?`)){tx.slice().forEach(put);setSync('🟢 실시간 동기화 중');return}}
-      tx=s.docs.map(d=>d.data());save();render();setSync('🟢 실시간 동기화 중');
-    },e=>setSync('🔴 연결 실패('+e.code+') — 규칙·설정값을 확인하세요'));
+      const remote=s.docs.map(d=>({...d.data(),id:d.data().id||d.id})).filter(validTx).map(fixTx);
+      const rid=new Set(remote.map(x=>x.id)),flag='synced_'+room,seen=localStorage.getItem(flag)==='1';
+      const localOnly=tx.filter(x=>!rid.has(x.id));
+      // 이 기기 내역은 절대 지우지 않아요: 처음 연결하거나 공유 방이 비어 있으면 이 기기 내역을 공유 방에 올려요
+      if(localOnly.length&&(!seen||!remote.length)){
+        localOnly.forEach(x=>{try{col().doc(x.id).set(clean(x)).catch(()=>{})}catch(e){}});
+        tx=[...remote,...localOnly];
+      }else tx=remote;
+      localStorage.setItem(flag,'1');save();
+      if(!firstDone){firstDone=true;autoMonth()}
+      render();setSync(`🟢 실시간 동기화 중 · 전체 ${tx.length}건`);
+    },e=>setSync('🔴 연결 실패('+e.code+') — 규칙·설정값을 확인하세요 (이 기기 내역은 안전해요)'));
   }catch(e){setSync('🔴 설정 오류: '+e.message)}
 }
-const cur=()=>tx.filter(t=>t.date.startsWith(month)).sort((a,b)=>a.date.localeCompare(b.date));
+function backup(){
+  const b=new Blob([JSON.stringify(tx,null,1)],{type:'application/json'}),a=document.createElement('a');
+  a.href=URL.createObjectURL(b);a.download=`가계부백업_${new Date().toISOString().slice(0,10)}.json`;document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+}
+async function restore(inp){
+  const f=inp.files[0];inp.value='';if(!f)return;
+  try{const arr=JSON.parse(await f.text()),rows=(Array.isArray(arr)?arr:[]).filter(validTx).map(fixTx);
+    if(!rows.length)throw new Error('복원할 내역이 없어요');
+    rows.forEach(put);autoMonth();render();alert(`${rows.length}건을 복원했어요.`)}
+  catch(e){alert('복원 실패: '+e.message)}
+}
+const cur=()=>tx.filter(t=>(t.date||'').startsWith(month)).sort((a,b)=>a.date.localeCompare(b.date));
 const sum=a=>a.reduce((s,t)=>s+t.amount,0);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-function setMonth(v){if(v){month=v;sel=[];render()}}
+function setMonth(v){if(v){month=v;localStorage.setItem('month',v);sel=[];render()}}
 function upd(id,k,v){const t=tx.find(x=>x.id===id);t[k]=k==='amount'?+v||0:k==='rec'?!!v:v;put(t);render()}
 function del(ids){ids.forEach(rmv);sel=[];render()}
 function add(){put({id:uid(),date:month+'-01',name:'새 항목',amount:0,cat:'기타',memo:'',rec:false});render()}
@@ -182,19 +219,22 @@ const T=t=>({type:t});
 const SCHEMA={type:'OBJECT',properties:{rows:{type:'ARRAY',items:{type:'OBJECT',properties:{date:T('STRING'),name:T('STRING'),amount:T('INTEGER'),cat:T('STRING')},required:['date','name','amount','cat']}},printed_total:{type:'INTEGER',nullable:true}},required:['rows']};
 const SCHEMA_CATS={type:'ARRAY',items:{type:'OBJECT',properties:{name:T('STRING'),cat:T('STRING')},required:['name','cat']}};
 let useSchema=true,okModel=null;
-async function gem(parts,schema){
+async function gem(parts,schema,ms=60000){
   let lastErr='';
   for(const m of (okModel?[okModel,...MODELS.filter(x=>x!==okModel)]:MODELS)){
-    for(let a=0;a<3;a++){
+    for(let a=0;a<2;a++){
       const cfg={temperature:0,maxOutputTokens:16384,responseMimeType:'application/json'};
       if(useSchema&&schema)cfg.responseSchema=schema;
-      const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`,
-        {method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':apiKey},body:JSON.stringify({contents:[{role:'user',parts}],generationConfig:cfg})});
+      const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),ms);let r;
+      try{r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`,
+        {method:'POST',signal:ac.signal,headers:{'Content-Type':'application/json','x-goog-api-key':apiKey},body:JSON.stringify({contents:[{role:'user',parts}],generationConfig:cfg})})}
+      catch(e){clearTimeout(tm);throw new Error(e.name==='AbortError'?'AI 응답 시간 초과 (잠시 후 다시 시도)':'네트워크 오류: '+e.message)}
+      clearTimeout(tm);
       if(r.ok){okModel=m;const j=await r.json();const c=j.candidates&&j.candidates[0];if(!c||!c.content)throw new Error('모델이 결과를 돌려주지 않았어요 (이미지가 차단되었을 수 있어요)');return c.content.parts.map(p=>p.text||'').join('').replace(/```json|```/g,'')}
       const b=await r.json().catch(()=>({}));lastErr=`${r.status} ${(b.error&&b.error.message)||''}`;
       if(r.status===400&&useSchema&&schema){useSchema=false;a--;continue}
       if(r.status===404)break;
-      if(r.status===429||r.status>=500){await sleep(2500*(a+1));continue}
+      if(r.status===429||r.status>=500){await sleep(1500*(a+1));continue}
       throw new Error(lastErr);
     }
   }
@@ -206,11 +246,15 @@ const BANK=[[/적금/,'적금'],[/청약/,'청약'],[/대출|이자/,'대출이�
 const bankCat=n=>(BANK.find(r=>r[0].test(n))||[0,0])[1]||guess(n);
 function normDate(v){
   if(v==null||v==='')return '';
-  if(typeof v==='number'&&v>20000&&v<80000)return new Date(Math.round((v-25569)*864e5)).toISOString().slice(0,10);
-  const s=String(v).trim();let m=s.match(/(\d{4})\D?(\d{1,2})\D?(\d{1,2})/);
-  if(m)return `${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}`;
-  m=s.match(/^(\d{1,2})\D(\d{1,2})/);
-  return m?`${month.slice(0,4)}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`:'';
+  if(v instanceof Date)return isNaN(v)?'':v.toISOString().slice(0,10);
+  if(typeof v==='number'){if(v>20000&&v<80000)return new Date((Math.floor(v)-25569)*864e5).toISOString().slice(0,10);v=String(v)}
+  const s=String(v).trim(),ok=(y,m,d)=>m>=1&&m<=12&&d>=1&&d<=31?`${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`:'';
+  let m=s.match(/(\d{4})\D{0,3}(\d{1,2})\D{0,3}(\d{1,2})/);       // 2026-11-03 · 2026.11.03 · 20261103 · 2026년 11월 3일
+  if(m)return ok(m[1],+m[2],+m[3]);
+  m=s.match(/^(\d{2})\D(\d{1,2})\D(\d{1,2})/);                    // 26.11.03
+  if(m)return ok('20'+m[1],+m[2],+m[3]);
+  m=s.match(/^(\d{1,2})\D{1,3}(\d{1,2})/);                        // 11/03 · 11월 3일
+  return m?ok(month.slice(0,4),+m[1],+m[2]):'';
 }
 const num=v=>{const n=parseFloat(String(v).replace(/[^\d.-]/g,''));return isNaN(n)?0:n};
 /* --- 사진 --- */
@@ -242,59 +286,106 @@ async function shrink(f){ // 큰 사진은 가로 1800px로 줄여 전송 속도
 }
 /* --- 엑셀/CSV --- */
 async function readWb(f){
+  if(typeof XLSX==='undefined')throw new Error('엑셀 처리 도구를 불러오지 못했어요. 인터넷 연결을 확인하고 새로고침(Ctrl+F5) 해주세요.');
   const buf=await f.arrayBuffer();
-  if(/\.csv$/i.test(f.name)){let t;try{t=new TextDecoder('utf-8',{fatal:true}).decode(buf)}catch(e){t=new TextDecoder('euc-kr').decode(buf)}return XLSX.read(t,{type:'string'})}
-  return XLSX.read(buf,{type:'array'});
-}
-function findHeader(rows){
-  const fc=(h,re,ex)=>h.findIndex(c=>re.test(c)&&!(ex&&ex.test(c)));
-  for(let i=0;i<Math.min(rows.length,40);i++){
-    const h=rows[i].map(c=>String(c).replace(/\s/g,''));
-    const d=fc(h,/이용일|거래일|승인일|결제일|일자|날짜|일시/),n=fc(h,/가맹점|이용처|이용내역|적요|내용|거래처|상호|사용처|기재|거래기록/);
-    if(d<0||n<0)continue;
-    const ex=/할인|수수료|이자|잔액|포인트|누적|적립|개월/;let a=-1;
-    for(const re of [/결제원금/,/이용금액/,/승인금액/,/청구금액/,/결제금액/,/금액/]){a=fc(h,re,ex);if(a>=0)break}
-    const dep=fc(h,/입금|받은금액/),wd=fc(h,/출금|보낸금액|지급|찾으신/);
-    if(a>=0||dep>=0||wd>=0)return{i,d,n,a,dep,wd};
+  try{
+    if(/\.csv$/i.test(f.name)){let t;try{t=new TextDecoder('utf-8',{fatal:true}).decode(buf)}catch(e){t=new TextDecoder('euc-kr').decode(buf)}return XLSX.read(t,{type:'string'})}
+    return XLSX.read(buf,{type:'array'});
+  }catch(e){
+    if(/password|encrypt|protect/i.test(e.message))throw new Error('엑셀에 비밀번호가 걸려 있어요. 엑셀에서 열어 비밀번호를 푼 뒤 "다른 이름으로 저장"해서 다시 올려주세요.');
+    throw e;
   }
-  return null;
+}
+const DATE_PRI=[/이용일|거래일|승인일|사용일/,/일자|날짜|일시/,/결제일/];
+const NAME_RE=/가맹점|이용처|이용내역|적요|내용|거래처|상호|사용처|기재|거래기록|이용하신곳/;
+const AMT_PRI=[/결제원금/,/이용금액/,/승인금액/,/청구금액/,/결제금액/,/금액/];
+const AMT_EX=/할인|수수료|이자|잔액|포인트|누적|적립|개월|회차|한도|예정/;
+function hdrOf(row){ // 한 줄이 표 머리글인지 판별 (명세서 중간에 머리글이 또 나와도 인식)
+  const h=row.map(c=>String(c==null?'':c).replace(/\s/g,''));
+  const fc=(re,ex)=>h.findIndex(c=>c&&re.test(c)&&!(ex&&ex.test(c)));
+  let d=-1;for(const re of DATE_PRI){d=fc(re,/예정|청구|만료/);if(d>=0)break}
+  const n=fc(NAME_RE);
+  if(d<0||n<0||d===n)return null;
+  const dep=fc(/입금|받은금액/),wd=fc(/출금|보낸금액|지급|찾으신/),as=[];
+  for(const re of AMT_PRI){const i=fc(re,AMT_EX);if(i>=0&&i!==d&&i!==n&&i!==dep&&i!==wd&&!as.includes(i))as.push(i)}
+  if(!as.length&&dep<0&&wd<0)return null;
+  return{d,n,as,dep,wd};
 }
 function sheetRows(rows,kind){
-  const H=findHeader(rows);if(!H)return null;const K=known(),out=[];
-  for(const r of rows.slice(H.i+1)){
-    const date=normDate(r[H.d]),name=String(r[H.n]).trim();
-    if(!date||!name||/합계|총계|소계/.test(name))continue;
-    let amount,cat;
-    if(kind==='card'){amount=num(r[H.a>=0?H.a:H.wd]);if(!amount)continue;cat=K[name]||guess(name)}
-    else{const dep=H.dep>=0?num(r[H.dep]):0,wd=H.wd>=0?num(r[H.wd]):0,one=H.a>=0?num(r[H.a]):0;
+  const K=known(),out=[];let H=null,found=false;
+  for(const r of rows){
+    const h=hdrOf(r);if(h){H=h;found=true;continue}
+    if(!H)continue;
+    const date=normDate(r[H.d]),name=String(r[H.n]==null?'':r[H.n]).trim();
+    if(!date||!name||/합계|총계|소계|이월/.test(name))continue;
+    let amount=0,cat;
+    if(kind==='card'){
+      for(const i of H.as){const v=num(r[i]);if(v){amount=v;break}}
+      if(!amount&&H.wd>=0)amount=num(r[H.wd]);
+      if(!amount)continue;cat=K[name]||guess(name);
+    }else{
+      const dep=H.dep>=0?num(r[H.dep]):0,wd=H.wd>=0?num(r[H.wd]):0;let one=0;for(const i of H.as){one=num(r[i]);if(one)break}
       if(dep>0){amount=dep;cat=/급여|월급/.test(name)?'주수입':'부수입'}
-      else{amount=Math.abs(wd||one);if(!amount)continue;cat=K[name]||bankCat(name)}}
+      else{amount=Math.abs(wd||one);if(!amount)continue;cat=K[name]||bankCat(name)}
+    }
     out.push({id:uid(),date,name,amount,cat,memo:'',rec:kind==='bank'});
+  }
+  return found?out:null;
+}
+function guessRows(rows,kind){ // 머리글이 없거나 낯선 표: 내용을 보고 날짜/가맹점/금액 열을 추측 (카드 전용)
+  if(kind!=='card')return null;
+  const S=rows.slice(0,300),W=Math.max(0,...S.map(r=>r.length));
+  const dc=Array(W).fill(0),ac=Array(W).fill(0),tc=Array.from({length:W},()=>new Set());
+  const isD=v=>typeof v==='string'&&/\d{2,4}\D{1,3}\d{1,2}\D{1,3}\d{1,2}|^\d{1,2}[\/.\-]\d{1,2}/.test(v)&&!!normDate(v);
+  S.forEach(r=>r.forEach((v,i)=>{
+    if(v===''||v==null)return;
+    if(isD(v))dc[i]++;
+    else if(num(v)>=100&&/^[\d,.\-\s원]+$/.test(String(v)))ac[i]++;
+    else if(typeof v==='string'&&/[가-힣A-Za-z]/.test(v))tc[i].add(v);
+  }));
+  const mx=a=>a.indexOf(Math.max(...a)),d=mx(dc),a=mx(ac),n=mx(tc.map(s=>s.size));
+  if(!(dc[d]>=3&&ac[a]>=3&&tc[n]&&tc[n].size>=3))return null;
+  const K=known(),out=[];
+  for(const r of rows){
+    const date=isD(r[d])?normDate(r[d]):'',name=String(r[n]==null?'':r[n]).trim(),amount=num(r[a]);
+    if(!date||!name||!amount||/합계|총계|소계/.test(name))continue;
+    out.push({id:uid(),date,name,amount,cat:K[name]||guess(name),memo:'',rec:false});
   }
   return out;
 }
 async function parseSheet(f,kind,warn){
-  const wb=await readWb(f),out=[];let missed=false;
+  const wb=await readWb(f),out=[];let seen='';
   for(const sn of wb.SheetNames){
-    const ws=wb.Sheets[sn],rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:false,dateNF:'yyyy-mm-dd',defval:''}),got=sheetRows(rows,kind);
-    if(got){out.push(...got);continue}
-    if(rows.length>1)missed=true;
-    if(missed&&apiKey){ // 표 머리글을 못 찾으면 AI가 표를 읽어줌
-      const csv=XLSX.utils.sheet_to_csv(ws).slice(0,60000);
-      out.push(...fromModel(await gem([{text:ocrPrompt(kind)+'\n\n[첨부는 이미지 대신 표 데이터(CSV)]\n'+csv}],SCHEMA),kind,f.name+'('+sn+')',warn));missed=false;
+    const ws=wb.Sheets[sn],rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:''});
+    if(!seen){const r=rows.find(r=>r.some(c=>String(c).trim()));if(r)seen=r.filter(c=>String(c).trim()).slice(0,6).join(' / ')}
+    let got=sheetRows(rows,kind);
+    if(!got||!got.length)got=guessRows(rows,kind);
+    if((!got||!got.length)&&rows.length>1&&apiKey){ // 그래도 못 읽으면 AI가 표를 읽어줌
+      try{const csv=XLSX.utils.sheet_to_csv(ws).slice(0,60000);
+        got=fromModel(await gem([{text:ocrPrompt(kind)+'\n\n[첨부는 이미지 대신 표 데이터(CSV)입니다]\n'+csv}],SCHEMA),kind,`${f.name}(${sn})`,warn)}
+      catch(e){warn.push(`${f.name}(${sn}) AI 읽기 실패: ${e.message}`)}
     }
+    if(got&&got.length)out.push(...got);
   }
-  if(!out.length)throw new Error('이용일/가맹점/금액 열을 찾지 못했어요. (API 키가 있으면 AI가 대신 읽어요)');
+  if(!out.length)throw new Error(`표에서 거래 내역을 찾지 못했어요. (읽힌 첫 줄: ${seen||'비어 있음'})${apiKey?'':' API 키를 넣으면 AI가 대신 읽어요.'}`);
   return out;
 }
-async function aiFill(rows,kind){ // 엑셀에서 분류 못한 가맹점을 AI가 한 번에 분류
+async function aiFill(rows,kind){ // 규칙으로 분류 못한 가맹점을 AI가 업종을 추론해 분류
   const names=[...new Set(rows.filter(r=>r.cat==='기타').map(r=>r.name))].slice(0,200);
   if(kind==='bank'||!names.length||!apiKey)return;
   try{
-    const out=JSON.parse(await gem([{text:`다음 가맹점/적요 각각을 ${ALL.join(', ')} 중 하나로 분류해 [{name,cat}] 배열로 답해.\n${CAT_GUIDE}\n\n`+names.join('\n')}],SCHEMA_CATS));
+    const out=JSON.parse(await gem([{text:`다음 가맹점/적요 각각을 ${ALL.join(', ')} 중 하나로 분류해 [{name,cat}] 배열로 답해.\n${CAT_GUIDE}\n\n`+names.join('\n')}],SCHEMA_CATS,25000));
     const m={};out.forEach(x=>{if(ALL.includes(x.cat))m[x.name]=x.cat});
     rows.forEach(r=>{if(r.cat==='기타'&&m[r.name])r.cat=m[r.name]});
   }catch(e){}
+}
+function dedupeExisting(){ // 이미 저장된 내역 중 겹친 것 정리
+  const nn=x=>String(x).toLowerCase().replace(/\(.*?\)|㈜|주식회사|[\s()\-_.]/g,'');
+  const seen={},dups=[];
+  tx.slice().sort((a,b)=>a.id<b.id?-1:1).forEach(t=>{const k=`${t.date}|${t.amount}|${nn(t.name)}`;if(seen[k])dups.push(t);else seen[k]=1});
+  if(!dups.length)return alert('겹치는 내역이 없어요.');
+  if(!confirm(`같은 날짜·같은 금액·같은 가맹점이 겹친 ${dups.length}건을 삭제할까요?\n예) ${dups.slice(0,3).map(t=>t.date.slice(5)+' '+t.name+' '+won(t.amount)).join(' / ')}\n\n※ 같은 곳에서 같은 날 같은 금액을 실제로 두 번 쓴 경우도 지워져요. 걱정되면 먼저 [백업]을 받아 두세요.`))return;
+  dups.forEach(t=>rmv(t.id));render();alert(`${dups.length}건을 정리했어요.`);
 }
 async function reclass(){
   const rows=cur().filter(t=>t.cat==='기타'&&t.amount>0);let n=0;
@@ -303,33 +394,50 @@ async function reclass(){
   if(left.length&&apiKey){await aiFill(left,'card');left.forEach(t=>{if(t.cat!=='기타'){put(t);n++}})}
   render();alert(`${n}건을 자동 분류했어요.`+(left.length&&!apiKey?'\n(남은 항목은 API 키가 있으면 AI가 분류해요)':''));
 }
+let hideT=null;
 async function upload(inp,kind){
   const files=[...inp.files];inp.value='';if(!files.length)return;
-  const busy=document.getElementById('busy'),say=t=>{busy.style.display='block';busy.textContent=t};
+  const busy=document.getElementById('busy'),isX=f=>/\.(xlsx|xls|csv)$/i.test(f.name);
+  const say=(t,keep)=>{busy.style.display='block';busy.textContent=t;clearTimeout(hideT);if(!keep)hideT=setTimeout(()=>{busy.style.display='none'},12000)};
   const rows=[],warn=[];
-  if(!apiKey&&files.some(f=>!/\.(xlsx|xls|csv)$/i.test(f.name)))keyBox();
-  let idx=0,done=0;
-  const worker=async()=>{ // 3장씩 동시에 처리
-    while(idx<files.length){
-      const f=files[idx++];
-      try{
-        if(/\.(xlsx|xls|csv)$/i.test(f.name))rows.push(...await parseSheet(f,kind,warn));
-        else{if(!apiKey)throw new Error('API 키가 필요해요');rows.push(...await parseImage(f,kind,warn))}
-      }catch(e){warn.push(`${f.name}: ${e.message}`)}
-      say(`${++done}/${files.length} 완료…`);
+  try{
+    if(!apiKey&&files.some(f=>!isX(f)))keyBox();
+    let idx=0,done=0;
+    const worker=async()=>{ // 3개씩 동시에 처리
+      while(idx<files.length){
+        const fi=idx++,f=files[fi];
+        try{
+          let got;
+          if(isX(f))got=await parseSheet(f,kind,warn);
+          else{if(!apiKey)throw new Error('API 키가 필요해요');got=await parseImage(f,kind,warn)}
+          got.forEach(r=>r._f=fi);rows.push(...got);
+        }catch(e){warn.push(`${f.name}: ${e.message}`)}
+        say(`${++done}/${files.length} 완료…`,true);
+      }
+    };
+    say(`0/${files.length} 분석 중…`,true);
+    await Promise.all([worker(),worker(),worker()]);
+    // 중복 제외: '같은 날짜 + 같은 금액'이면 같은 건으로 봐요 (가맹점 표기가 달라도 걸러져요)
+    // - 이미 저장된 개수만큼은 제외, 한 파일 안의 같은 금액 여러 건은 실제 여러 번 결제로 보고 유지
+    // - 서로 다른 파일(겹쳐 찍은 캡처)에 같은 건이 있으면 한 번만 인정
+    const dk=r=>`${r.date}|${r.amount}`,have={},per={};
+    tx.forEach(t=>{const k=dk(t);have[k]=(have[k]||0)+1});
+    rows.forEach(r=>{const k=dk(r);per[k]=per[k]||{};per[k][r._f]=(per[k][r._f]||0)+1});
+    const allow={};Object.keys(per).forEach(k=>{allow[k]=Math.max(0,Math.max(...Object.values(per[k]))-(have[k]||0))});
+    const fresh=[];rows.forEach(r=>{const k=dk(r);if(allow[k]>0){allow[k]--;fresh.push(r)}});
+    const dup=rows.length-fresh.length;fresh.forEach(r=>delete r._f);
+    fresh.forEach(put);
+    if(fresh.length){const c={};fresh.forEach(r=>{const m=r.date.slice(0,7);c[m]=(c[m]||0)+1});month=Object.entries(c).sort((a,b)=>b[1]-a[1])[0][0];localStorage.setItem('month',month)}
+    render();
+    say(`✅ ${fresh.length}건 추가${dup?` · 이미 있는 ${dup}건 제외`:''}${fresh.length?` · ${month} 로 이동`:''}`);
+    // 화면에 먼저 보여주고, 분류가 애매한 건 AI가 뒤에서 보강
+    const need=fresh.filter(r=>r.cat==='기타');
+    if(need.length&&apiKey&&kind!=='bank'){
+      say(`✅ ${fresh.length}건 추가 · AI가 분류 보강 중…`,true);
+      aiFill(need,kind).then(()=>{let n=0;need.forEach(r=>{if(r.cat!=='기타'){put(r);n++}});render();say(`✅ ${fresh.length}건 추가 · AI가 ${n}건 분류 보강`)});
     }
-  };
-  say(`0/${files.length} 분석 중…`);
-  await Promise.all([worker(),worker(),worker()]);
-  say('분류 정리 중…');await aiFill(rows,kind);
-  const have=new Set(tx.map(t=>`${t.date}|${t.name}|${t.amount}`));
-  const fresh=rows.filter(r=>!have.has(`${r.date}|${r.name}|${r.amount}`)),dup=rows.length-fresh.length;
-  fresh.forEach(put);
-  if(fresh.length){const c={};fresh.forEach(r=>{const m=r.date.slice(0,7);c[m]=(c[m]||0)+1});month=Object.entries(c).sort((a,b)=>b[1]-a[1])[0][0]}
-  say(`✅ ${fresh.length}건 추가${dup?` · 이미 있는 ${dup}건 제외`:''}${fresh.length?` · ${month} 로 이동`:''}`);
-  setTimeout(()=>{busy.style.display='none'},9000);
-  render();
-  if(warn.length)alert('확인이 필요해요:\n\n'+warn.join('\n\n'));
+  }catch(e){say('⚠️ '+e.message);warn.push(e.message)}
+  if(warn.length)alert('확인이 필요해요:\n\n'+[...new Set(warn)].join('\n\n'));
 }
 
 /* ===== 직접 입력 ===== */
@@ -371,6 +479,31 @@ let irrOpen=false;function toggleIrr(){irrOpen=!irrOpen;render()}
 
 /* ===== 렌더 ===== */
 function render(){
+  try{renderMain()}catch(e){console.error(e);
+    document.getElementById('app').innerHTML='<div class="card"><b class="red">화면을 그리는 중 오류가 났어요</b><div class="sub" style="margin:6px 0">'+esc(e.message)+'</div><p class="sub">내역은 지워지지 않았어요. 먼저 백업을 받아 두세요.</p><button onclick="backup()">백업 저장</button></div>'}
+}
+function rowHtml(t){return `<tr><td><input type="checkbox" ${sel.includes(t.id)?'checked':''} onchange="tog('${t.id}',this.checked)" style="width:auto"></td>
+    <td><input type="date" value="${t.date}" onchange="upd('${t.id}','date',this.value)"></td>
+    <td><input value="${esc(t.name)}" onchange="upd('${t.id}','name',this.value)"></td>
+    <td><select onchange="upd('${t.id}','cat',this.value)">${Object.values(G).map(g=>`<optgroup label="${g.l}">${g.c.map(k=>`<option ${k===t.cat?'selected':''}>${k}</option>`).join('')}</optgroup>`).join('')}</select></td>
+    <td><input type="number" class="n" value="${t.amount}" onchange="upd('${t.id}','amount',this.value)"></td>
+    <td><input value="${esc(t.memo)}" placeholder="메모" onchange="upd('${t.id}','memo',this.value)"></td>
+    <td><input type="checkbox" ${t.rec?'checked':''} onchange="upd('${t.id}','rec',this.checked)" style="width:auto"></td></tr>`}
+function listRows(c){
+  const byDate=(a,b)=>dir==='asc'?a.date.localeCompare(b.date):b.date.localeCompare(a.date);
+  if(view==='date')return c.slice().sort(byDate).map(rowHtml).join('');
+  let out='';  // 항목별: 구분 순서대로 묶고, 항목마다 소계를 보여줘요 (안은 최신순)
+  for(const g of Object.keys(G))for(const k of G[g].c){
+    const rs=c.filter(t=>t.cat===k).sort((a,b)=>b.date.localeCompare(a.date));if(!rs.length)continue;
+    out+=`<tr><td colspan="7" style="background:#f5f5f4;border-top:1px solid var(--line);padding:7px 8px"><b>${G[g].l} › ${k}</b> <span class="sub">${rs.length}건 · ${won(sum(rs))}</span></td></tr>`+rs.map(rowHtml).join('');
+  }
+  return out;
+}
+function emptyMsg(){
+  const ms=[...new Set(tx.map(t=>t.date.slice(0,7)))].sort().reverse();
+  return '<div class="sub" style="text-align:center;padding:24px">이 달 내역이 없어요.'+(ms.length?'<div style="margin-top:10px">다른 달에 저장된 내역이 있어요 — 눌러서 이동:</div><div class="row" style="justify-content:center;margin-top:8px">'+ms.map(m=>`<button onclick="setMonth('${m}')">${m} (${tx.filter(t=>t.date.startsWith(m)).length}건)</button>`).join('')+'</div>':'<br>명세서를 올리거나 ‘샘플 데이터’를 눌러 보세요.')+'</div>';
+}
+function renderMain(){
   document.getElementById('month').value=month;
   const c=cur(),by=g=>c.filter(t=>grp(t.cat)===g);
   const inc=sum(by('income')),sav=sum(by('saving')),exp=sum(c.filter(t=>isExp(t.cat))),sur=inc-sav-exp,liv=sum(by('living')),irr=sum(by('irregular'));
@@ -391,20 +524,17 @@ function render(){
     ${irrOpen?G.irregular.c.map(k=>`<div class="li" onclick="openCat('${k}')"><span>${k}</span><span class="n">${won(sum(c.filter(t=>t.cat===k)))}</span></div>`).join(''):''}</div>
   <div class="grid2"><div class="card"><b>항목별 지출 순위</b><canvas id="c1" height="220"></canvas></div>
     <div class="card"><b>월별 지출 추이</b><canvas id="c2" height="220"></canvas></div></div>
-  <div class="card"><div class="row" style="justify-content:space-between;margin-bottom:8px"><b>${month} 내역 (${c.length}건)</b>
+  <div class="card"><div class="row" style="justify-content:space-between;margin-bottom:8px"><div class="row"><b>${month} 내역 (${c.length}건)</b>
+      <button class="${view==='date'?'pri':''}" onclick="setView('date')">날짜순 ${view==='date'?(dir==='desc'?'▼ 최신순':'▲ 오래된순'):''}</button>
+      <button class="${view==='cat'?'pri':''}" onclick="setView('cat')">항목별</button></div>
     <div class="row"><button onclick="add()">추가</button><button onclick="merge()">합치기</button><button onclick="del(sel)">선택 삭제</button><button onclick="exportFile('xlsx')">Excel</button><button onclick="exportFile('csv')">CSV</button></div></div>
     <div class="tw"><table><tr><th></th><th>날짜</th><th>내용</th><th>항목</th><th>금액</th><th>메모</th><th>매월반복</th></tr>
-    ${c.map(t=>`<tr><td><input type="checkbox" ${sel.includes(t.id)?'checked':''} onchange="tog('${t.id}',this.checked)" style="width:auto"></td>
-    <td><input type="date" value="${t.date}" onchange="upd('${t.id}','date',this.value)"></td>
-    <td><input value="${esc(t.name)}" onchange="upd('${t.id}','name',this.value)"></td>
-    <td><select onchange="upd('${t.id}','cat',this.value)">${Object.values(G).map(g=>`<optgroup label="${g.l}">${g.c.map(k=>`<option ${k===t.cat?'selected':''}>${k}</option>`).join('')}</optgroup>`).join('')}</select></td>
-    <td><input type="number" class="n" value="${t.amount}" onchange="upd('${t.id}','amount',this.value)"></td>
-    <td><input value="${esc(t.memo)}" placeholder="메모" onchange="upd('${t.id}','memo',this.value)"></td>
-    <td><input type="checkbox" ${t.rec?'checked':''} onchange="upd('${t.id}','rec',this.checked)" style="width:auto"></td></tr>`).join('')}</table>
-    ${c.length?'':'<p class="sub" style="text-align:center;padding:24px">내역이 없어요. 명세서를 올리거나 ‘샘플 데이터’를 눌러 보세요.</p>'}</div></div>`;
+    ${listRows(c)}</table>
+    ${c.length?'':emptyMsg()}</div></div>`;
   drawCharts(c);
 }
 function drawCharts(c){
+  if(typeof Chart==='undefined')return;
   charts.forEach(x=>x.destroy());charts=[];
   const m={};c.filter(t=>isExp(t.cat)).forEach(t=>m[t.cat]=(m[t.cat]||0)+t.amount);
   const r=Object.entries(m).sort((a,b)=>b[1]-a[1]);
@@ -415,7 +545,7 @@ function drawCharts(c){
     data:{labels:ms.map(x=>x.slice(5)+'월'),datasets:['fixed','living','irregular','transport','etc'].map(g=>({label:G[g].l,backgroundColor:COL[g],data:ms.map(x=>sum(tx.filter(t=>t.date.startsWith(x)&&grp(t.cat)===g)))}))},
     options:{plugins:{tooltip:{callbacks:{label:i=>`${i.dataset.label} ${won(i.raw)}`}}},scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,ticks:{callback:v=>v/10000+'만'}}}}}));
 }
-render();connect();
+autoMonth();render();connect();
 </script>
 </body>
 </html>
