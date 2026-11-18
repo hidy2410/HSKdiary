@@ -61,6 +61,7 @@ td input:focus{background:#fff;border-color:var(--line)}
       <button onclick="reclass()">기타 자동분류</button>
       <button onclick="dedupeExisting()">중복 정리</button>
       <button onclick="sample()">샘플 데이터</button>
+      <button onclick="removeSamples()">샘플 지우기</button>
       <button onclick="keyBox()">API 키</button>
       <button onclick="roomBox()">방 코드</button>
       <button onclick="backup()">백업</button>
@@ -137,7 +138,7 @@ const col=()=>db.collection('rooms').doc(room).collection('tx');
 const setSync=t=>{const e=document.getElementById('sync');if(e)e.textContent=t};
 const saveKey=k=>{apiKey=k;localStorage.setItem('gkey',k);if(db&&room)db.collection('rooms').doc(room).set({gkey:k},{merge:true}).catch(e=>alert('키를 공유 방에 저장하지 못했어요('+e.code+'). 이 기기에서는 사용 가능해요. Firestore 규칙을 확인해 주세요.'))};
 const validTx=x=>!!(x&&x.id&&typeof x.date==='string'&&/^\d{4}-\d{2}/.test(x.date));
-const fixTx=x=>({id:String(x.id),date:x.date,name:String(x.name==null?'':x.name),amount:+x.amount||0,cat:ALL.includes(x.cat)?x.cat:'기타',memo:String(x.memo||''),rec:!!x.rec});
+const fixTx=x=>({id:String(x.id),date:x.date,name:String(x.name==null?'':x.name),amount:+x.amount||0,cat:ALL.includes(x.cat)?x.cat:'기타',memo:String(x.memo||''),rec:!!x.rec,...(x.sample?{sample:true}:{})});
 const clean=t=>JSON.parse(JSON.stringify(t));
 function put(t){
   const i=tx.findIndex(x=>x.id===t.id);if(i<0)tx.push(t);else tx[i]=t;save();
@@ -153,7 +154,7 @@ function roomBox(){
   if(r!==null){room=r.trim();localStorage.setItem('room',room);connect()}
 }
 function autoMonth(){ // 이번 달에 내역이 없으면, 내역이 있는 가장 최근 달로 자동 이동
-  if(!cur().length&&tx.length){const ms=[...new Set(tx.map(t=>t.date.slice(0,7)))].sort();month=ms[ms.length-1];localStorage.setItem('month',month)}
+  if(!cur().length&&tx.length){const ms=[...new Set(tx.filter(t=>validDate(t.date)).map(t=>t.date.slice(0,7)))].sort();if(!ms.length)return;month=ms[ms.length-1];localStorage.setItem('month',month)}
 }
 function connect(){
   if(unsub){unsub();unsub=null}
@@ -197,13 +198,37 @@ function setMonth(v){if(v){month=v;localStorage.setItem('month',v);sel=[];render
 function upd(id,k,v){const t=tx.find(x=>x.id===id);t[k]=k==='amount'?+v||0:k==='rec'?!!v:v;put(t);render()}
 function del(ids){ids.forEach(rmv);sel=[];render()}
 function add(){put({id:uid(),date:month+'-01',name:'새 항목',amount:0,cat:'기타',memo:'',rec:false});render()}
-function tog(id,on){sel=on?[...sel,id]:sel.filter(i=>i!==id)}
+function tog(id,on){sel=on?[...new Set([...sel,id])]:sel.filter(i=>i!==id);updSel()}
 function merge(){const r=cur().filter(t=>sel.includes(t.id));if(r.length<2)return alert('합칠 항목을 2개 이상 선택하세요.');
   const [a,...rest]=r;a.name=`${a.name} 외 ${rest.length}건`;a.amount=sum(r);put(a);del(rest.map(x=>x.id))}
-function sample(){const m=month,P=(d,name,amount,cat,rec)=>({id:uid(),date:`${m}-${d}`,name,amount,cat,memo:'',rec});
+function sample(){const m=month,P=(d,name,amount,cat,rec)=>({id:uid(),date:`${m}-${d}`,name,amount,cat,memo:'',rec,sample:true});
   [P('01','급여',3800000,'주수입',1),P('10','청약',200000,'청약',1),P('10','적금',500000,'적금',1),P('05','대출이자',650000,'대출이자',1),
   P('07','통신비',89000,'통신비',1),P('25','관리비',180000,'관리비',1),P('03','쿠팡',182400,'식비'),P('08','이마트',214300,'식비'),P('12','다이소',38600,'생활용품'),
   P('15','유니클로',429200,'꾸밈'),P('16','LF스퀘어',453908,'꾸밈'),P('18','모던하우스',87000,'꾸밈'),P('20','○○내과',32000,'건강'),P('22','CGV',28000,'문화생활')].forEach(put);render()}
+const validDate=d=>/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(d||'');
+const SAMPLE_SIG=[['급여',3800000],['청약',200000],['적금',500000],['대출이자',650000],['통신비',89000],['관리비',180000],['쿠팡',182400],['이마트',214300],['다이소',38600],['유니클로',429200],['LF스퀘어',453908],['모던하우스',87000],['○○내과',32000],['CGV',28000]];
+function removeSamples(){ // 샘플 데이터 지우기 (예전에 넣은 샘플도 이름+금액이 같으면 찾아요)
+  const hit=tx.filter(t=>t.sample||(!t.memo&&SAMPLE_SIG.some(([n,a])=>t.name===n&&t.amount===a)));
+  if(!hit.length)return alert('지울 샘플 데이터가 없어요.');
+  if(!confirm(`샘플 데이터로 보이는 ${hit.length}건을 삭제할까요?\n${hit.slice(0,6).map(t=>t.name+' '+won(t.amount)).join(', ')}${hit.length>6?' …':''}\n\n※ 이름·금액이 샘플과 똑같은 실제 내역이 있다면 함께 지워져요. 걱정되면 먼저 [백업]을 받아 두세요.`))return;
+  hit.forEach(t=>rmv(t.id));render();alert(`${hit.length}건을 지웠어요.`);
+}
+function badBanner(){
+  const bad=tx.filter(t=>!validDate(t.date));if(!bad.length)return '';
+  return `<div class="card" style="background:#fff7ed"><b>날짜가 잘못 저장된 내역 ${bad.length}건</b><div class="sub" style="margin:4px 0 8px">예전 버전의 오류로 생긴 내역이에요 (예: ${esc(bad[0].date)} ${esc(bad[0].name)}). 월별 추이 차트에 "26월" 같은 막대가 생기는 원인이에요. 삭제한 뒤 해당 엑셀/명세서를 다시 올려주세요.</div><button class="pri" onclick="fixBad()">잘못된 내역 삭제</button></div>`;
+}
+function fixBad(){
+  const bad=tx.filter(t=>!validDate(t.date));if(!bad.length)return;
+  if(!confirm(`날짜가 잘못된 ${bad.length}건을 삭제할까요?\n삭제 후 해당 엑셀/명세서를 다시 올리면 올바른 날짜로 들어와요.`))return;
+  bad.forEach(t=>rmv(t.id));render();
+}
+function updSel(){const b=document.getElementById('delBtn');if(b)b.textContent='선택 삭제'+(sel.length?` (${sel.length})`:'')}
+function selAll(on){const ids=cur().map(t=>t.id);sel=on?[...new Set([...sel,...ids])]:sel.filter(i=>!ids.includes(i));render()}
+function selCat(k,on){const ids=cur().filter(t=>t.cat===k).map(t=>t.id);sel=on?[...new Set([...sel,...ids])]:sel.filter(i=>!ids.includes(i));render()}
+function bulkCat(c){
+  if(!c)return;if(!sel.length)return alert('먼저 바꿀 내역을 선택해 주세요.');
+  const n=sel.length;sel.forEach(id=>{const t=tx.find(x=>x.id===id);if(t){t.cat=c;put(t)}});sel=[];render();alert(`${n}건을 '${c}'(으)로 바꿨어요.`);
+}
 function loadFixed(){const [y,m]=month.split('-').map(Number),pm=`${m===1?y-1:y}-${String(m===1?12:m-1).padStart(2,'0')}`,last=new Date(y,m,0).getDate(),c=cur();
   const add=tx.filter(t=>t.rec&&t.date.startsWith(pm)&&!c.some(x=>x.rec&&x.name===t.name&&x.cat===t.cat)).map(t=>({...t,id:uid(),date:`${month}-${String(Math.min(+t.date.slice(8),last)).padStart(2,'0')}`}));
   if(!add.length)return alert('불러올 지난달 고정 내역이 없거나 이미 모두 반영되어 있어요.');add.forEach(put);render()}
@@ -495,12 +520,12 @@ function listRows(c){
   let out='';  // 항목별: 구분 순서대로 묶고, 항목마다 소계를 보여줘요 (안은 최신순)
   for(const g of Object.keys(G))for(const k of G[g].c){
     const rs=c.filter(t=>t.cat===k).sort((a,b)=>b.date.localeCompare(a.date));if(!rs.length)continue;
-    out+=`<tr><td colspan="7" style="background:#f5f5f4;border-top:1px solid var(--line);padding:7px 8px"><b>${G[g].l} › ${k}</b> <span class="sub">${rs.length}건 · ${won(sum(rs))}</span></td></tr>`+rs.map(rowHtml).join('');
+    out+=`<tr><td colspan="7" style="background:#f5f5f4;border-top:1px solid var(--line);padding:7px 8px"><b>${G[g].l} › ${k}</b> <span class="sub">${rs.length}건 · ${won(sum(rs))}</span> <label style="margin-left:10px;cursor:pointer"><input type="checkbox" ${rs.every(t=>sel.includes(t.id))?'checked':''} onchange="selCat('${k}',this.checked)" style="width:auto"> 전체선택</label></td></tr>`+rs.map(rowHtml).join('');
   }
   return out;
 }
 function emptyMsg(){
-  const ms=[...new Set(tx.map(t=>t.date.slice(0,7)))].sort().reverse();
+  const ms=[...new Set(tx.filter(t=>validDate(t.date)).map(t=>t.date.slice(0,7)))].sort().reverse();
   return '<div class="sub" style="text-align:center;padding:24px">이 달 내역이 없어요.'+(ms.length?'<div style="margin-top:10px">다른 달에 저장된 내역이 있어요 — 눌러서 이동:</div><div class="row" style="justify-content:center;margin-top:8px">'+ms.map(m=>`<button onclick="setMonth('${m}')">${m} (${tx.filter(t=>t.date.startsWith(m)).length}건)</button>`).join('')+'</div>':'<br>명세서를 올리거나 ‘샘플 데이터’를 눌러 보세요.')+'</div>';
 }
 function renderMain(){
@@ -509,7 +534,7 @@ function renderMain(){
   const inc=sum(by('income')),sav=sum(by('saving')),exp=sum(c.filter(t=>isExp(t.cat))),sur=inc-sav-exp,liv=sum(by('living')),irr=sum(by('irregular'));
   const pct=Math.min(100,liv/BUDGET*100),over=liv>BUDGET;
   const gc=over?'var(--bad)':pct>85?'var(--warn)':'var(--ok)';
-  document.getElementById('app').innerHTML=`
+  document.getElementById('app').innerHTML=`${badBanner()}
   <div class="kpis">
     <div class="kpi"><small>총 수입</small><b>${won(inc)}</b></div>
     <div class="kpi"><small>총 저축 · 저축률 ${inc?Math.round(sav/inc*100):0}%</small><b>${won(sav)}</b></div>
@@ -527,8 +552,8 @@ function renderMain(){
   <div class="card"><div class="row" style="justify-content:space-between;margin-bottom:8px"><div class="row"><b>${month} 내역 (${c.length}건)</b>
       <button class="${view==='date'?'pri':''}" onclick="setView('date')">날짜순 ${view==='date'?(dir==='desc'?'▼ 최신순':'▲ 오래된순'):''}</button>
       <button class="${view==='cat'?'pri':''}" onclick="setView('cat')">항목별</button></div>
-    <div class="row"><button onclick="add()">추가</button><button onclick="merge()">합치기</button><button onclick="del(sel)">선택 삭제</button><button onclick="exportFile('xlsx')">Excel</button><button onclick="exportFile('csv')">CSV</button></div></div>
-    <div class="tw"><table><tr><th></th><th>날짜</th><th>내용</th><th>항목</th><th>금액</th><th>메모</th><th>매월반복</th></tr>
+    <div class="row"><button onclick="add()">추가</button><button onclick="merge()">합치기</button><button id="delBtn" onclick="del(sel)">선택 삭제${sel.length?` (${sel.length})`:''}</button><select onchange="bulkCat(this.value);this.selectedIndex=0"><option value="">선택한 내역 항목 변경…</option>${Object.values(G).map(g=>`<optgroup label="${g.l}">${g.c.map(k=>`<option>${k}</option>`).join('')}</optgroup>`).join('')}</select><button onclick="exportFile('xlsx')">Excel</button><button onclick="exportFile('csv')">CSV</button></div></div>
+    <div class="tw"><table><tr><th><input type="checkbox" title="전체선택" ${c.length&&c.every(t=>sel.includes(t.id))?'checked':''} onchange="selAll(this.checked)" style="width:auto"></th><th>날짜</th><th>내용</th><th>항목</th><th>금액</th><th>메모</th><th>매월반복</th></tr>
     ${listRows(c)}</table>
     ${c.length?'':emptyMsg()}</div></div>`;
   drawCharts(c);
@@ -540,7 +565,7 @@ function drawCharts(c){
   const r=Object.entries(m).sort((a,b)=>b[1]-a[1]);
   charts.push(new Chart(document.getElementById('c1'),{type:'bar',data:{labels:r.map(x=>x[0]),datasets:[{data:r.map(x=>x[1]),backgroundColor:'#f59e0b',borderRadius:6}]},
     options:{indexAxis:'y',plugins:{legend:{display:false},tooltip:{callbacks:{label:i=>won(i.raw)}}},scales:{x:{display:false},y:{grid:{display:false}}}}}));
-  const ms=[...new Set(tx.map(t=>t.date.slice(0,7)))].sort();
+  const ms=[...new Set(tx.filter(t=>validDate(t.date)).map(t=>t.date.slice(0,7)))].sort();
   charts.push(new Chart(document.getElementById('c2'),{type:'bar',
     data:{labels:ms.map(x=>x.slice(5)+'월'),datasets:['fixed','living','irregular','transport','etc'].map(g=>({label:G[g].l,backgroundColor:COL[g],data:ms.map(x=>sum(tx.filter(t=>t.date.startsWith(x)&&grp(t.cat)===g)))}))},
     options:{plugins:{tooltip:{callbacks:{label:i=>`${i.dataset.label} ${won(i.raw)}`}}},scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,ticks:{callback:v=>v/10000+'만'}}}}}));
